@@ -1,7 +1,7 @@
 import numpy as np
 import gym.spaces
 from gym.spaces.box import Box
-from softgym.utils.overrides import overrides
+from softgym.softgym.utils.overrides import overrides
 
 
 class NormalizedEnv(object):

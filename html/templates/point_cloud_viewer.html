@@ -1,0 +1,53 @@
+
+        <!DOCTYPE html>
+        <html lang="zh-CN">
+        <head>
+            <meta charset="UTF-8">
+            <meta http-equiv="X-UA-Compatible" content="IE=edge">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>3D 点云查看器</title>
+            <!-- 引入 Three.js、jQuery、proj4 和 Potree 库 -->
+            <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+            <script src="{{ url_for('static', filename='three.min.js') }}"></script>
+            <script src="{{ url_for('static', filename='lazylibs/proj4.js') }}"></script>
+            <script src="{{ url_for('static', filename='potree.js') }}"></script>
+            <link rel="stylesheet" href="{{ url_for('static', filename='potree.css') }}">
+        </head>
+        <body>
+            <div id="potree_render_area" style="width: 100%; height: 100vh;"></div>
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    try {
+                        // 初始化 Potree 查看器
+                        const viewer = new Potree.Viewer(document.getElementById('potree_render_area'));
+                        viewer.setEDLEnabled(true);
+                        viewer.setFOV(60);
+                        viewer.setPointBudget(1_000_000);
+                        viewer.loadSettingsFromURL();
+                        viewer.loadGUI(() => {
+                            viewer.setLanguage('zh-CN');
+                            if (document.getElementById('menu_appearance')) {
+                                document.getElementById('menu_appearance').nextElementSibling.style.display = 'block';
+                            }
+                            if (document.getElementById('menu_tools')) {
+                                document.getElementById('menu_tools').nextElementSibling.style.display = 'block';
+                            }
+                        });
+                        // 加载点云文件
+                        Potree.loadPointCloud("/point_cloud", "point_cloud", function(e) {
+                            const pointcloud = e.pointcloud;
+                            const material = pointcloud.material;
+                            material.size = 1;
+                            material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
+                            material.shape = Potree.PointShape.SQUARE;
+                            viewer.scene.addPointCloud(pointcloud);
+                            viewer.fitToScreen();
+                        });
+                    } catch (error) {
+                        console.error("Error initializing Potree Viewer:", error);
+                    }
+                });
+            </script>
+        </body>
+        </html>
+        

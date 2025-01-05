@@ -1,7 +1,7 @@
 import abc
 import numpy as np
 from gym.spaces import Box
-from softgym.utils.misc import rotation_2d_around_center, extend_along_center
+from softgym.softgym.utils.misc import rotation_2d_around_center, extend_along_center
 import pyflex
 import scipy.spatial
 
@@ -382,7 +382,7 @@ class PickerPickPlace(Picker):
         return model_actions, curr_pos
 
 
-from softgym.utils.gemo_utils import intrinsic_from_fov, get_rotation_matrix
+from softgym.softgym.utils.gemo_utils import intrinsic_from_fov, get_rotation_matrix
 
 
 class PickerQPG(PickerPickPlace):

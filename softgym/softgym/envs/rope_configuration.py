@@ -4,7 +4,7 @@ import pickle
 import os.path as osp
 import pyflex
 from gym.spaces import Box
-from softgym.envs.rope_flatten import RopeFlattenEnv
+from softgym.softgym.envs.rope_flatten import RopeFlattenEnv
 import scipy
 import copy
 from copy import deepcopy

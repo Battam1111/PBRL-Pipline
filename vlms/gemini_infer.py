@@ -8,7 +8,10 @@ from io import BytesIO
 from matplotlib import pyplot as plt
 import numpy as np
 
-genai.configure(api_key=os.environ['GEMINI_API_KEY'])
+# genai.configure(api_key=os.environ['GEMINI_API_KEY'])
+# api固定
+genai.configure(api_key="AIzaSyD9k5FoxtJeGx7-eeVl_G01_CBYius1gas")
+
 
 model = genai.GenerativeModel('gemini-pro-vision')
 text_model = genai.GenerativeModel('gemini-pro')
@@ -134,7 +137,8 @@ def gemini_query_2(query_list, summary_prompt, temperature=0):
             print("gemini retrying...")
             time.sleep(2)
             try_cnt += 1
-            if try_cnt >= 5:
+            # 标记，5修改为1
+            if try_cnt >= 1:
                 break
 
     

@@ -2,9 +2,9 @@ import numpy as np
 from gym.spaces import Box
 
 import pyflex
-from softgym.envs.pour_water import PourWaterPosControlEnv
+from softgym.softgym.envs.pour_water import PourWaterPosControlEnv
 import copy
-from softgym.utils.misc import quatFromAxisAngle
+from softgym.softgym.utils.misc import quatFromAxisAngle
 import pickle
 
 

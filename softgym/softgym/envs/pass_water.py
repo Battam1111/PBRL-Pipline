@@ -2,10 +2,10 @@ import numpy as np
 from gym.spaces import Box
 
 import pyflex
-from softgym.envs.fluid_env import FluidEnv
+from softgym.softgym.envs.fluid_env import FluidEnv
 import copy
-from softgym.utils.misc import quatFromAxisAngle
-from softgym.action_space.robot_env import RobotBase
+from softgym.softgym.utils.misc import quatFromAxisAngle
+from softgym.softgym.action_space.robot_env import RobotBase
 import random
 import cv2
 

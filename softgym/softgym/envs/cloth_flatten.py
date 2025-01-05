@@ -1,10 +1,10 @@
 import numpy as np
 import random
 import pyflex
-from softgym.envs.cloth_env import ClothEnv
+from softgym.softgym.envs.cloth_env import ClothEnv
 from copy import deepcopy
-from softgym.utils.misc import vectorized_range, vectorized_meshgrid
-from softgym.utils.pyflex_utils import center_object
+from softgym.softgym.utils.misc import vectorized_range, vectorized_meshgrid
+from softgym.softgym.utils.pyflex_utils import center_object
 
 
 class ClothFlattenEnv(ClothEnv):

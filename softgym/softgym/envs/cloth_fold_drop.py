@@ -4,7 +4,7 @@ import pickle
 import os.path as osp
 import pyflex
 from copy import deepcopy
-from softgym.envs.cloth_fold import ClothFoldEnv
+from softgym.softgym.envs.cloth_fold import ClothFoldEnv
 
 
 class ClothFoldDropEnv(ClothFoldEnv):

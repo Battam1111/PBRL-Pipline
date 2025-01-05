@@ -1,9 +1,9 @@
 import numpy as np
 from gym.spaces import Box
 import pyflex
-from softgym.envs.flex_env import FlexEnv
-from softgym.action_space.action_space import  Picker, PickerPickPlace, PickerQPG, PickerPlace
-from softgym.action_space.robot_env import RobotBase
+from softgym.softgym.envs.flex_env import FlexEnv
+from softgym.softgym.action_space.action_space import  Picker, PickerPickPlace, PickerQPG, PickerPlace
+from softgym.softgym.action_space.robot_env import RobotBase
 from copy import deepcopy
 
 

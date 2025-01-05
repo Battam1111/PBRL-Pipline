@@ -15,9 +15,39 @@ from collections import deque
 from skimage.util.shape import view_as_windows
 from torch import nn
 from torch import distributions as pyd
-from softgym.registered_env import env_arg_dict, SOFTGYM_ENVS
-from softgym.utils.normalized_env import normalize
+from softgym.softgym.registered_env import env_arg_dict, SOFTGYM_ENVS
+from softgym.softgym.utils.normalized_env import normalize
+
+
+def make_env(cfg):
+    """
+    创建一个环境实例。支持常规环境、自定义环境以及特定开源环境库中的环境。
     
+    Args:
+        cfg: 配置对象，包含环境名称（cfg.env）及其他参数。
+    
+    Returns:
+        gym.Env: 实例化的环境对象。
+    """
+    try:
+        # 首先尝试使用 gym.make 加载 Gym 环境
+        env = gym.make(cfg.env)
+        # 如果环境支持参数传递，可以通过 cfg 中的参数字典传递（例如：reward threshold等）
+        if hasattr(cfg, "env_kwargs"):
+            env.configure(**cfg.env_kwargs)
+        return env
+    
+    except gym.error.Error:
+        # 如果是自定义环境或其他库中的环境，尝试直接使用环境名和参数字典创建
+        if hasattr(cfg, "custom_env_class"):
+            env_class = cfg.custom_env_class
+            env_kwargs = cfg.custom_env_kwargs if hasattr(cfg, "custom_env_kwargs") else {}
+            env = env_class(**env_kwargs)
+            return env
+        
+        # 捕获任何未匹配的情况，提示未找到的环境名称
+        raise ValueError(f"Environment '{cfg.env}' is not supported or not found in gym or custom environments.")
+
 def make_softgym_env(cfg):
     env_name = cfg.env.replace('softgym_','')
     env_kwargs = env_arg_dict[env_name]

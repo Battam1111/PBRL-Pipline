@@ -1,89 +1,103 @@
 defaults:
-    - agent: sac
-    
-# this needs to be specified manually
-experiment: PEBBLE
+    - agent: sac  # 默认使用SAC（Soft Actor-Critic）算法
 
-# reward learning
-segment: 50
-activation: tanh
-num_seed_steps: 1000
-num_unsup_steps: 5000
-num_interact: 5000
-reward_lr: 0.0003
-reward_batch: 128
-# reward_update: 200
-reward_update: 5 # for soccer
-feed_type: 0
-reset_update: 100
-topK: 5
-ensemble_size: 3
-max_feedback: 1400
-large_batch: 10
-label_margin: 0.0
-teacher_beta: -1
-teacher_gamma: 1
-teacher_eps_mistake: 0
-teacher_eps_skip: 0
-teacher_eps_equal: 0
+# 必须手动指定实验名称
+experiment: PEBBLE  # 当前实验名称为PEBBLE
 
-# scheduling
-reward_schedule: 0
+# 奖励学习配置
+segment: 50  # 分段的长度，决定从交互数据中抽取的片段长度
+activation: tanh  # 激活函数类型，这里使用双曲正切函数
 
-num_train_steps: 1e6
-replay_buffer_capacity: ${num_train_steps}
+# num_seed_steps: 1000  # 初始探索步数
+# num_unsup_steps: 5000  # 无监督学习步数
 
-# evaluation config
-eval_frequency: 10000
-num_eval_episodes: 10
-device: cuda
+num_seed_steps: 100  # 缩小初始探索步数
+num_unsup_steps: 500  # 缩小无监督学习步数
+num_interact: 500  # 缩小交互步数
 
-# logger
-log_frequency: 10000
-log_save_tb: false
-save_interval: ${num_interact}
+# num_interact: 5000  # 交互步数，用于与环境进行的交互学习
 
-# video recorder
-save_video: false
+reward_lr: 0.0003  # 奖励模型的学习率
+reward_batch: 128  # 奖励模型每次训练的批量大小
 
-# setups
-seed: 1
+# reward_update: 5  # 奖励模型的更新频率（原值200，适用于足球环境缩小为5）
 
-# Environment
-env: dog_stand
-gradient_update: 1
+reward_update: 1  # 奖励模型更新频率进一步缩小
+feed_type: 0  # 反馈类型的标识
+reset_update: 100  # 每100步重置奖励更新
+topK: 5  # 使用奖励中的Top K策略
+ensemble_size: 3  # 奖励模型集成的大小
+max_feedback: 1400  # 用户提供反馈的最大次数
+large_batch: 10  # 每次训练的大批量大小
+label_margin: 0.0  # 标签分布的边界值
+teacher_beta: -1  # 教师策略的参数，控制反馈偏好强度
+teacher_gamma: 1  # 教师策略的折扣因子
+teacher_eps_mistake: 0  # 教师错误的概率
+teacher_eps_skip: 0  # 教师跳过反馈的概率
+teacher_eps_equal: 0  # 教师给出中性反馈的概率
 
-# vlm label
-vlm_label: 0
-vlm: bard
-flip_vlm_label: 0
-sum_segment_score: false
-collect_data_interval: 0
-max_image_difference: 0
-use_first_and_last: 0
-image_reward: 0
-resnet: 0 # default
-conv_kernel_sizes: [5, 3, 3, 3] # default
-conv_n_channels: [16, 32, 64, 128] # default
-conv_strides: [3, 2, 2, 2] # default
-image_size: 300
-cached_label_path: null
+# 调度配置
+reward_schedule: 0  # 奖励模型更新的调度策略，0表示禁用
 
-# exp_name
-exp_name: gemini_template_1
-prompt: ???
-clip_prompt: "The green drawer is completely opened."
-reward: learn_from_preference
+# 训练配置
+# num_train_steps: 1e6  # 训练的总步数
 
-# load pretrained models
-reward_model_load_dir: "None"
-reward_model_score_load_dir: "None"
-agent_model_load_dir: "None"
-mode: train
-save_images: false
+num_train_steps: 1e4  # 缩小总训练步数
+replay_buffer_capacity: ${num_train_steps}  # 回放缓冲区的容量，等于训练步数
 
-# hydra configuration
+# 评估配置
+# eval_frequency: 10000  # 评估频率，单位为步数
+
+eval_frequency: 1000  # 缩小评估频率
+num_eval_episodes: 10  # 每次评估的回合数
+device: cuda  # 运行设备，GPU（cuda）
+
+# 日志配置
+log_frequency: 10000  # 日志记录的频率
+log_save_tb: false  # 是否保存TensorBoard格式的日志
+save_interval: ${num_interact}  # 保存模型的间隔步数
+
+# 视频录制
+save_video: false  # 是否保存交互过程的视频
+
+# 实验设置
+seed: 1  # 随机种子
+
+# 环境配置
+env: metaworld_soccer-v2  # 环境名称，当前为“元世界”中的足球任务
+gradient_update: 1  # 梯度更新的次数
+
+# VLM相关配置
+vlm_label: 0  # VLM（视觉语言模型）的标签类型
+vlm: bard  # 使用的VLM模型名称
+flip_vlm_label: 0  # 是否翻转VLM标签
+sum_segment_score: false  # 是否对片段分数求和
+collect_data_interval: 0  # 数据收集的间隔
+max_image_difference: 0  # 最大图像差异（图像奖励的度量）
+use_first_and_last: 0  # 是否仅使用片段的首尾帧
+image_reward: 0  # 是否基于图像的奖励
+resnet: 0  # 是否使用ResNet特征提取器
+conv_kernel_sizes: [5, 3, 3, 3]  # 卷积核大小
+conv_n_channels: [16, 32, 64, 128]  # 卷积层的通道数量
+conv_strides: [3, 2, 2, 2]  # 卷积的步长
+image_size: 300  # 输入图像的大小
+cached_label_path: null  # 缓存的标签路径
+
+# 实验名称
+exp_name: Test  # 实验名称为Test
+prompt: ???  # 提示词（未知）
+clip_prompt: "The green drawer is completely opened."  # CLIP模型的提示词
+reward: learn_from_preference  # 奖励类型为从偏好中学习
+
+# 预训练模型加载
+reward_model_load_dir: "None"  # 奖励模型加载路径
+reward_model_score_load_dir: "None"  # 奖励模型分数加载路径
+agent_model_load_dir: "None"  # 代理模型加载路径
+mode: train  # 模式为训练
+save_images: false  # 是否保存生成的图像
+
+# Hydra配置
 hydra:
-    name: ${env}
+    name: ${env}  # Hydra实验的名称，使用环境名
     run:
-        dir: ./exp/${exp_name}/${env}/${now:%Y-%m-%d}-${now:%H-%M-%S}/vlm_${vlm_label}${vlm}_reward${reward}_H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_lr${agent.params.actor_lr}/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/label_smooth_${label_margin}/schedule_${reward_schedule}/${experiment}_init${num_seed_steps}_unsup${num_unsup_steps}_inter${num_interact}_maxfeed${max_feedback}_seg${segment}_act${activation}_Rlr${reward_lr}_Rbatch${reward_batch}_Rupdate${reward_update}_en${ensemble_size}_sample${feed_type}_large_batch${large_batch}_seed${seed}
+        dir: ./exp/${exp_name}/${env}/${now:%Y-%m-%d}-${now:%H-%M-%S}/vlm_${vlm_label}${vlm}_reward${reward}_H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_lr${agent.params.actor_lr}/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/label_smooth_${label_margin}/schedule_${reward_schedule}/${experiment}_init${num_seed_steps}_unsup${num_unsup_steps}_inter${num_interact}_maxfeed${max_feedback}_seg${segment}_act${activation}_Rlr${reward_lr}_Rbatch${reward_batch}_Rupdate${reward_update}_en${ensemble_size}_sample${feed_type}_large_batch${large_batch}_seed${seed}  # 日志和结果保存路径

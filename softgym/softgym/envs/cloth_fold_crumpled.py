@@ -2,8 +2,8 @@ import numpy as np
 import random
 import pyflex
 from copy import deepcopy
-from softgym.envs.cloth_fold import ClothFoldEnv
-from softgym.utils.pyflex_utils import center_object
+from softgym.softgym.envs.cloth_fold import ClothFoldEnv
+from softgym.softgym.utils.pyflex_utils import center_object
 
 class ClothFoldCrumpledEnv(ClothFoldEnv):
     def __init__(self, **kwargs):

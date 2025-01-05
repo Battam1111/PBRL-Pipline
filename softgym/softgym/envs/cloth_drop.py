@@ -3,7 +3,7 @@ import random
 import pickle
 import os.path as osp
 import pyflex
-from softgym.envs.cloth_env import ClothEnv
+from softgym.softgym.envs.cloth_env import ClothEnv
 import copy
 from copy import deepcopy
 

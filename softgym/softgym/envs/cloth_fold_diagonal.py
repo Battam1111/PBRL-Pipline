@@ -1,8 +1,8 @@
 import numpy as np
 import pyflex
 from copy import deepcopy
-from softgym.envs.cloth_env import ClothEnv
-from softgym.utils.pyflex_utils import center_object
+from softgym.softgym.envs.cloth_env import ClothEnv
+from softgym.softgym.utils.pyflex_utils import center_object
 import copy
 import os
 

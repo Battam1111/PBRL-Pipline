@@ -2,9 +2,9 @@ import numpy as np
 from gym.spaces import Box
 
 import pyflex
-from softgym.envs.fluid_env import FluidEnv
+from softgym.softgym.envs.fluid_env import FluidEnv
 import copy
-from softgym.utils.misc import rotate_rigid_object, quatFromAxisAngle
+from softgym.softgym.utils.misc import rotate_rigid_object, quatFromAxisAngle
 from shapely.geometry import Polygon
 import random, math
 

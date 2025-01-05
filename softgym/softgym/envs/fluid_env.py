@@ -1,7 +1,7 @@
 import numpy as np
 import gym
 import pyflex
-from softgym.envs.flex_env import FlexEnv
+from softgym.softgym.envs.flex_env import FlexEnv
 
 
 class FluidEnv(FlexEnv):

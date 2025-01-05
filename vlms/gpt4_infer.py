@@ -2,6 +2,9 @@ from openai import OpenAI
 import base64
 import os
 
+# 固定api
+os.environ['OPENAI_API_KEY'] = "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"
+
 list_of_api_keys = [
    os.environ['OPENAI_API_KEY'],
 ]

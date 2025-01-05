@@ -2,9 +2,9 @@ import numpy as np
 import pickle
 import os.path as osp
 import pyflex
-from softgym.envs.rope_env import RopeNewEnv
+from softgym.softgym.envs.rope_env import RopeNewEnv
 from copy import deepcopy
-from softgym.utils.pyflex_utils import random_pick_and_place, center_object
+from softgym.softgym.utils.pyflex_utils import random_pick_and_place, center_object
 
 class RopeFlattenEnv(RopeNewEnv):
     def __init__(self, cached_states_path='rope_flatten_init_states.pkl', **kwargs):
