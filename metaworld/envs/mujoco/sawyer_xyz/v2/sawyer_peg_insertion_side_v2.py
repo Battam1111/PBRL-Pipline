@@ -10,6 +10,7 @@ from metaworld.envs.mujoco.sawyer_xyz.sawyer_xyz_env import (
     _assert_task_is_set,
 )
 
+from scene_point_cloud_processor import ScenePointCloudExtractor, PointCloudSaver
 
 class SawyerPegInsertionSideEnvV2(SawyerXYZEnv):
     TARGET_RADIUS = 0.07
@@ -39,6 +40,8 @@ class SawyerPegInsertionSideEnvV2(SawyerXYZEnv):
         obj_high = (0.2, 0.7, 0.02)
         goal_low = (-0.35, 0.4, -0.001)
         goal_high = (-0.25, 0.7, 0.001)
+
+        self.visualizer = PointCloudSaver()  # 初始化保存器
 
         super().__init__(
             self.model_name,
@@ -115,6 +118,33 @@ class SawyerPegInsertionSideEnvV2(SawyerXYZEnv):
     def _get_quat_objects(self):
         geom_xmat = self.data.site("pegGrasp").xmat.reshape(3, 3)
         return Rotation.from_matrix(geom_xmat).as_quat()
+
+    # 标记：pointcloud
+    def render(self, mode=''):
+        """
+        渲染环境。
+
+        参数：
+            mode (str): 渲染模式，可以是 'human'、'rgb_array'、'depth_array' 或 'pointcloud'。
+            width (int, 可选): 渲染宽度。如果为 None，则使用环境的默认宽度。
+            height (int, 可选): 渲染高度。如果为 None，则使用环境的默认高度。
+            camera_name (str): 摄像机名称。
+
+        返回：
+            如果 mode 为 'pointcloud'，返回完整的场景点云数据；否则，返回渲染结果。
+        """
+        if mode == 'pointcloud':
+            extractor = ScenePointCloudExtractor(
+                self.model, 
+                self.data, 
+                task_related_body_names=["peg", "box", "mocap", "hand"]
+                )
+            point_cloud = extractor.extract_point_cloud()
+
+            self.visualizer.save_point_cloud(point_cloud)  # 保存点云文件
+            return point_cloud
+        else:
+            return super().render()
 
     def reset_model(self):
         self._reset_hand()

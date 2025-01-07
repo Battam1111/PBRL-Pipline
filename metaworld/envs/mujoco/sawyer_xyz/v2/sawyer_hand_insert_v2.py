@@ -8,6 +8,8 @@ from metaworld.envs.mujoco.sawyer_xyz.sawyer_xyz_env import (
     _assert_task_is_set,
 )
 
+from scene_point_cloud_processor import ScenePointCloudExtractor, PointCloudSaver
+
 
 class SawyerHandInsertEnvV2(SawyerXYZEnv):
     TARGET_RADIUS = 0.05
@@ -19,6 +21,8 @@ class SawyerHandInsertEnvV2(SawyerXYZEnv):
         obj_high = (0.1, 0.7, 0.05)
         goal_low = (-0.04, 0.8, -0.0201)
         goal_high = (0.04, 0.88, -0.0199)
+
+        self.visualizer = PointCloudSaver()  # 初始化保存器
 
         super().__init__(
             self.model_name,
@@ -103,6 +107,33 @@ class SawyerHandInsertEnvV2(SawyerXYZEnv):
 
         self._set_obj_xyz(self.obj_init_pos)
         return self._get_obs()
+
+    # 标记：pointcloud
+    def render(self, mode=''):
+        """
+        渲染环境。
+
+        参数：
+            mode (str): 渲染模式，可以是 'human'、'rgb_array'、'depth_array' 或 'pointcloud'。
+            width (int, 可选): 渲染宽度。如果为 None，则使用环境的默认宽度。
+            height (int, 可选): 渲染高度。如果为 None，则使用环境的默认高度。
+            camera_name (str): 摄像机名称。
+
+        返回：
+            如果 mode 为 'pointcloud'，返回完整的场景点云数据；否则，返回渲染结果。
+        """
+        if mode == 'pointcloud':
+            extractor = ScenePointCloudExtractor(
+                self.model, 
+                self.data, 
+                task_related_body_names=["obj", "goal", "mocap", "hand", "tablelink"]
+                )
+            point_cloud = extractor.extract_point_cloud()
+
+            self.visualizer.save_point_cloud(point_cloud)  # 保存点云文件
+            return point_cloud
+        else:
+            return super().render()
 
     def compute_reward(self, action, obs):
         obj = obs[4:7]

@@ -89,6 +89,8 @@ class SawyerDoorLockEnvV2(SawyerXYZEnv):
     def _get_quat_objects(self):
         return self.data.body("door_link").xquat
 
+    
+
     def reset_model(self):
         self._reset_hand()
         door_pos = self._get_state_rand_vec()

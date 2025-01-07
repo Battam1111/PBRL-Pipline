@@ -6,8 +6,13 @@ clip_env_prompts = {
     "metaworld_door-open-v2": "The safe door is opened.",         # 尝试翻转版本
     "metaworld_soccer-v2": "The soccer ball is in the goal.",     # 未解决，有奖励问题
 
-    "CartPole-v1": "pole vertically upright on top of the cart.",
+    "metaworld_peg-insert-side-v2": "The peg is inserted into the hole.",
+    "metaworld_hand-insert-v2": "The hand is inserted into the hole.",
+    "metaworld_shelf-place-v2": "The object is placed on the shelf.",
+    "metaworld_disassemble-v2": "The peg is disassembled.",
+    "metaworld_handle-pull-side-v2": "The handle is pulled to the side.",
 
+    "CartPole-v1": "pole vertically upright on top of the cart.",
     "softgym_RopeFlattenEasy": "The blue rope is straightened.",
     "softgym_PassWater": "The container, which holds water, is as close to the red circle as possible without causing too many water droplets to spill.",
     "softgym_ClothFoldDiagonal": "The cloth is folded diagonally from top left corner to bottom right corner.",
@@ -19,6 +24,14 @@ goal_env_prompts = {
     "metaworld_drawer-open-v2": "to open the drawer",           # 尝试翻转版本
     "metaworld_door-open-v2": "to open the safe door",          # 尝试翻转版本
     "metaworld_soccer-v2": "to move the soccer ball into the goal",  # 未解决，有奖励问题
+
+    # 后加的任务
+    "metaworld_peg-insert-side-v2": "to insert the peg into the hole",
+    "metaworld_hand-insert-v2": "to insert the hand into the hole",
+    "metaworld_shelf-place-v2": "to place the object on the shelf",
+    "metaworld_disassemble-v2": "to disassemble the peg",
+    "metaworld_handle-pull-side-v2": "to pull the handle to the side",
+
     "CartPole-v1": "to balance the brown pole on the black cart to be upright",
     "softgym_RopeFlattenEasy": "to straighten the blue rope",
     "softgym_PassWater": "to move the container, which holds water, to be as close to the red circle as possible without causing too many water droplets to spill",

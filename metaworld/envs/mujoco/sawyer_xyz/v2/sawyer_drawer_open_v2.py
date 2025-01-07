@@ -9,14 +9,16 @@ from metaworld.envs.mujoco.sawyer_xyz.sawyer_xyz_env import (
     _assert_task_is_set,
 )
 
+from scene_point_cloud_processor import ScenePointCloudExtractor, PointCloudSaver
 
 class SawyerDrawerOpenEnvV2(SawyerXYZEnv):
     def __init__(self, tasks=None, render_mode=None):
         hand_low = (-0.5, 0.40, 0.05)
         hand_high = (0.5, 1, 0.5)
+
+        # 原被注释掉的代码
         # obj_low = (-0.1, 0.9, 0.0)
         # obj_high = (0.1, 0.9, 0.0)
-        
         
         obj_low = (0, 0.9, 0.0)
         obj_high = (0, 0.9, 0.0)
@@ -39,7 +41,10 @@ class SawyerDrawerOpenEnvV2(SawyerXYZEnv):
                 dtype=np.float32,
             ),
             "obj_init_pos": np.array([0.0, 0.9, 0.0], dtype=np.float32),
+
+            # 原被注释掉的代码
             # "hand_init_pos": np.array([0, 0.6, 0.2], dtype=np.float32),
+
             "hand_init_pos": np.array([0, 0.75, 0.15], dtype=np.float32),
         }
         self.obj_init_pos = self.init_config["obj_init_pos"]
@@ -57,6 +62,8 @@ class SawyerDrawerOpenEnvV2(SawyerXYZEnv):
 
         self.maxDist = 0.2
         self.target_reward = 1000 * self.maxDist + 1000 * 2
+
+        self.visualizer = PointCloudSaver()  # 初始化保存器
 
     @property
     def model_name(self):
@@ -93,6 +100,33 @@ class SawyerDrawerOpenEnvV2(SawyerXYZEnv):
 
     def _get_quat_objects(self):
         return self.data.body("drawer_link").xquat
+
+    # 标记：pointcloud
+    def render(self, mode=''):
+        """
+        渲染环境。
+
+        参数：
+            mode (str): 渲染模式，可以是 'human'、'rgb_array'、'depth_array' 或 'pointcloud'。
+            width (int, 可选): 渲染宽度。如果为 None，则使用环境的默认宽度。
+            height (int, 可选): 渲染高度。如果为 None，则使用环境的默认高度。
+            camera_name (str): 摄像机名称。
+
+        返回：
+            如果 mode 为 'pointcloud'，返回完整的场景点云数据；否则，返回渲染结果。
+        """
+        if mode == 'pointcloud':
+            extractor = ScenePointCloudExtractor(
+                self.model, 
+                self.data, 
+                task_related_body_names=["drawer", "mocap", "hand"]
+                )
+            point_cloud = extractor.extract_point_cloud()
+
+            self.visualizer.save_point_cloud(point_cloud)  # 保存点云文件
+            return point_cloud
+        else:
+            return super().render()
 
     def reset_model(self):
         self._reset_hand()
