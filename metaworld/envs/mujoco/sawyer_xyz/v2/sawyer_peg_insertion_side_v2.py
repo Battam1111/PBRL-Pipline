@@ -141,7 +141,7 @@ class SawyerPegInsertionSideEnvV2(SawyerXYZEnv):
                 )
             point_cloud = extractor.extract_point_cloud()
 
-            self.visualizer.save_point_cloud(point_cloud)  # 保存点云文件
+            # self.visualizer.save_point_cloud(point_cloud)  # 保存点云文件
             return point_cloud
         else:
             return super().render()

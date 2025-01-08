@@ -13,7 +13,7 @@ from reward_model import RewardModel  # 引入奖励模型模块
 from reward_model_score import RewardModelScore  # 引入基于分数的奖励模型模块
 from collections import deque  # 引入双端队列
 from prompt import clip_env_prompts  # 引入用于提示的环境变量
-from data_saver import ImageSaver  # 保存图像函数
+from data_saver import ImageSaver, PointCloudSaver  # 保存图像函数
 
 import utils  # 实用函数
 import hydra  # 用于配置管理的库
@@ -91,7 +91,19 @@ class Workspace(object):
             
         self.image_height = image_height
         self.image_width = image_width
-        self.image_saver = ImageSaver()  # 初始化图像保存器
+
+        # 初始化图像保存器
+        # self.image_saver = ImageSaver(
+        #     task=cfg.env,
+        #     output_dir="/home/star/Yanjun/RL-VLM-F/test/images",
+        # )
+
+        # 初始化点云保存器
+        self.pointcloud_saver = PointCloudSaver(
+            task=cfg.env,
+            output_dir="/home/star/Yanjun/RL-VLM-F/test/pointclouds",
+        )
+
 
         # 初始化回放缓冲区
         # 如果是 pointllm_two_image，就需要同时存储图像和点云
@@ -507,12 +519,15 @@ class Workspace(object):
             else:
                 render_image = self.env.render(mode='rgb_array')
 
-            # 使用保存器保存图像
-            self.image_saver.save_image(render_image)
-
             # 如果是 pointllm_two_image 模式，则再获取点云
             if self.cfg.vlm == 'pointllm_two_image':
                 point_cloud = self.env.render(mode='pointcloud')
+
+            # 使用保存器保存图像
+            # self.image_saver.save_data(render_image)
+
+            # 使用保存器保存点云
+            self.pointcloud_saver.save_data(point_cloud)
 
             if self.cfg.image_reward and render_image is not None:
                 if 'Water' not in self.cfg.env and 'Rope' not in self.cfg.env:
@@ -611,15 +626,16 @@ def main(cfg):
     # 手动设置参数
     
     # 设置环境名称
-    # cfg.env = 'metaworld_soccer-v2'  # 使用元世界足球环境
+    cfg.env = 'metaworld_soccer-v2'  # 使用元世界足球环境
     # cfg.env = 'metaworld_drawer-open-v2' # 使用元世界抽屉打开环境
     # cfg.env = 'metaworld_door-open-v2'  # 使用元世界开门环境
     # cfg.env = 'metaworld_peg-insert-side-v2' # 使用元世界插销环境
-    # cfg.env = 'metaworld_hand-insert-v2' # 使用元世界手插入环境
-    # cfg.env = 'metaworld_sweep-into-v2' # 使用元世界扫描环境
-    # cfg.env = 'metaworld_shelf-place-v2' # 使用元世界架子放置环境
     # cfg.env = 'metaworld_disassemble-v2' # 使用元世界拆卸环境
-    cfg.env = 'metaworld_handle-pull-side-v2' # 使用元世界拉手环境
+    # cfg.env = 'metaworld_handle-pull-side-v2' # 使用元世界拉手环境
+
+    # cfg.env = 'metaworld_hand-insert-v2' # 使用元世界手插入环境（有问题）
+    # cfg.env = 'metaworld_sweep-into-v2' # 使用元世界扫描环境（有问题）
+    # cfg.env = 'metaworld_shelf-place-v2' # 使用元世界架子放置环境(用不了)
     
     # 设置随机种子，确保实验的可重复性
     cfg.seed = 0  

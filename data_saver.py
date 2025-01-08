@@ -1,97 +1,254 @@
 import os
 import numpy as np
-from PIL import Image
 import random
 import collections
+from PIL import Image
 
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import torchvision.transforms as T
 
-import faiss  # pip install faiss-gpu (或 faiss-cpu)
+import faiss  # pip install faiss-gpu
 
-class ResNetFeatureExtractor(nn.Module):
+
+# -------------------- 通用基类 --------------------
+
+class BaseSaver:
     """
-    以 ResNet18 为例，可替换成任意预训练模型或自定义网络。
-    输出 embedding 向量(512维) 用于相似度计算。
+    通用保存器基类，封装了图片和点云保存器的共同行为。
+    子类需实现 _compute_embedding 和 _do_save 方法，以适应具体数据类型。
     """
-    def __init__(self):
-        super().__init__()
-        backbone = models.resnet18(pretrained=True)
-        # 去掉最后的全连接层，保留到 Global Pool
-        self.features = nn.Sequential(*list(backbone.children())[:-1])  # (batch, 512, 1, 1)
-
-    def forward(self, x):
-        with torch.no_grad():
-            feats = self.features(x)  # (batch, 512, 1, 1)
-        feats = feats.view(feats.size(0), -1)  # (batch, 512)
-        return feats
-
-
-class ImageSaver:
     def __init__(
         self, 
-        output_dir="/home/star/Yanjun/RL-VLM-F/test/images", 
-        max_images=1000,
-        dist_thresh=5.0,               # 初始dist阈值
-        sample_compare_size=256,         # 当不使用ANN时, 随机抽样比较的数量
-        use_ann_search=True,             # 是否使用Faiss近似搜索 (IndexHNSWFlat)
-        replace_strategy="random",       # "random"或"nearest"
-        hnsw_M=32,                       # HNSW图邻居数量
-        efSearch=50,                     # HNSW搜索范围
-        efConstruction=40,               # HNSW构建范围
-        
-        # ================ 自动调节阈值的相关参数 ================
-        auto_tune_dist_thresh=True,      # 是否启用自动调节
-        target_accept_ratio=0.3,         # 目标接受率(下限)
-        upper_accept_ratio=0.7,          # 目标接受率(上限)
-        adjust_factor=0.1,               # 每次调整幅度(例如0.1 => 调整10%)
-        history_window=50,               # 在多少次尝试后才检查并调节
-        warmup_saves=10,                 # 前多少次尝试不进行自动调节(热身)
+        task,
+        output_dir, 
+        max_items=1000,
+        sample_compare_size=256,
+        use_ann_search=True,
+        replace_strategy="random",
+        hnsw_M=32,
+        efSearch=50,
+        efConstruction=40
     ):
-        """
-        :param output_dir:   图像保存目录
-        :param max_images:   最大保存图像数量
-        :param dist_thresh:  初始相似度过滤阈值
-        :param sample_compare_size: 不用ANN时,随机对比embedding的数量
-        :param use_ann_search: True => 用Faiss(HNSWFlat+IDMap)，False => list-based
-        :param replace_strategy: 满库后的替换策略: "random" 或 "nearest"
-        :param hnsw_M:     HNSW中的图构建参数
-        :param efSearch:   HNSW搜索范围
-        :param efConstruction: HNSW构建范围
-
-        # 以下是自动调节dist_thresh的参数
-        :param auto_tune_dist_thresh: 是否开启自适应阈值
-        :param target_accept_ratio:    目标最低接受率, 若低于此值就增大阈值
-        :param upper_accept_ratio:     接受率的上限, 若高于此值就减小阈值
-        :param adjust_factor:          每次调节幅度, dist_thresh *= (1 +/- adjust_factor)
-        :param history_window:         统计最近多少次"尝试"以计算接受率
-        :param warmup_saves:          前多少次成功保存不进行调节(热身期)
-        """
-        self.output_dir = output_dir
-        self.max_images = max_images
-        self.dist_thresh = dist_thresh
+        # 基本参数设置
+        self.task = task
+        self.output_dir = os.path.join(output_dir, task)
+        self.max_items = max_items
         self.sample_compare_size = sample_compare_size
         self.use_ann_search = use_ann_search
         self.replace_strategy = replace_strategy
-        
-        self.auto_tune = auto_tune_dist_thresh
-        self.target_accept_ratio = target_accept_ratio
-        self.upper_accept_ratio = upper_accept_ratio
-        self.adjust_factor = adjust_factor
-        self.history_window = history_window
-        self.warmup_saves = warmup_saves
 
         # 创建保存目录
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
+        os.makedirs(self.output_dir, exist_ok=True)
 
-        # 全局自增ID(写文件时使用)
+        # 全局唯一ID，用于文件命名
         self.current_global_id = 0
-        
-        # ================ 预处理与模型 ================
+
+        # 设备设置、FAISS索引和存储初始化
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.faiss_index = None
+        self.index2meta = {}
+        if self.use_ann_search:
+            self._init_faiss_gpu_index(dim=512, hnsw_M=hnsw_M, efSearch=efSearch, efConstruction=efConstruction)
+
+        # 使用GPU张量存储嵌入
+        self.saved_embeddings = torch.empty((0, 512), device=self.device)
+        self.saved_records = []
+
+        # 用于动态阈值调整的记录
+        self.accepted_distances = []
+
+        # 初始阶段的最小接受数量，内部参数无需用户干预
+        self.min_initial = min(50, self.max_items)
+
+        # 初始化阈值为 None，表示尚未设置
+        self.dist_thresh = None
+
+    def _init_faiss_gpu_index(self, dim, hnsw_M, efSearch, efConstruction):
+        """初始化 FAISS GPU HNSW 索引"""
+        res = faiss.StandardGpuResources()
+        hnsw_index = faiss.IndexHNSWFlat(dim, hnsw_M, faiss.METRIC_L2)
+        hnsw_index.hnsw.efSearch = efSearch
+        hnsw_index.hnsw.efConstruction = efConstruction
+        gpu_index = faiss.index_cpu_to_gpu(res, 0, hnsw_index)
+        self.faiss_index = faiss.IndexIDMap(gpu_index)
+
+    def _get_current_count(self):
+        """获取当前已保存的数据数量"""
+        return self.faiss_index.ntotal if self.use_ann_search else self.saved_embeddings.size(0)
+
+    def _get_min_distance(self, emb_new):
+        """
+        计算新数据 embedding 与已保存数据的最小距离，
+        并过滤掉 NaN 和 Inf 值。
+        """
+        if self.use_ann_search:
+            distances, _ = self.faiss_index.search(emb_new, k=1)
+            distance = distances[0][0]
+        else:
+            count = self.saved_embeddings.size(0)
+            if count == 0:
+                return float('inf')
+            compare_size = min(self.sample_compare_size, count)
+            indices = torch.randint(0, count, (compare_size,))
+            sampled = self.saved_embeddings[indices]
+            distances = torch.norm(sampled - emb_new, dim=1)
+            distance = distances.min().item()
+        return distance if np.isfinite(distance) else float('inf')
+
+    def _replace_one(self, data, emb):
+        """根据替换策略在数据库满时进行替换"""
+        if self.replace_strategy == "random":
+            self._replace_random(data, emb)
+        elif self.replace_strategy == "nearest":
+            self._replace_nearest(data, emb)
+
+    def _replace_random(self, data, emb):
+        """随机替换已有数据"""
+        count = self._get_current_count()
+        if count == 0:
+            return
+        if self.use_ann_search:
+            old_id = random.choice(list(self.index2meta.keys()))
+            self._remove_by_id(old_id)
+        else:
+            idx = random.randint(0, self.saved_embeddings.size(0) - 1)
+            if idx < len(self.saved_records):
+                _, old_fname = self.saved_records[idx]
+                old_path = os.path.join(self.output_dir, old_fname)
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+            self.saved_embeddings = torch.cat([self.saved_embeddings[:idx], self.saved_embeddings[idx+1:]], dim=0)
+            if self.saved_records:
+                self.saved_records.pop(idx)
+        self._do_save(data, emb)
+
+    def _replace_nearest(self, data, emb):
+        """用最近邻策略替换最相似的数据"""
+        count = self._get_current_count()
+        if count == 0:
+            return
+        if self.use_ann_search:
+            distances, ids = self.faiss_index.search(emb, k=1)
+            old_id = ids[0][0]
+            self._remove_by_id(old_id)
+        else:
+            distances = torch.norm(self.saved_embeddings - emb, dim=1)
+            best_dist, best_idx = torch.min(distances, dim=0)
+            best_idx = best_idx.item()
+            if best_idx < len(self.saved_records):
+                _, old_fname = self.saved_records[best_idx]
+                old_path = os.path.join(self.output_dir, old_fname)
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+            self.saved_embeddings = torch.cat([self.saved_embeddings[:best_idx], self.saved_embeddings[best_idx+1:]], dim=0)
+            if self.saved_records:
+                self.saved_records.pop(best_idx)
+        self._do_save(data, emb)
+
+    def _remove_by_id(self, old_id):
+        """删除指定ID的数据及其对应的文件和索引信息"""
+        if self.use_ann_search:
+            remove_ids = np.array([old_id], dtype=np.int64)
+            self.faiss_index.remove_ids(remove_ids)
+            meta = self.index2meta.pop(old_id, None)
+            if meta:
+                old_path = os.path.join(self.output_dir, meta["filename"])
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+
+    def _update_threshold(self, new_distance):
+        """
+        更新相似度门槛基于已接受数据的距离分布，
+        使用中位数作为新的阈值。
+        """
+        self.accepted_distances.append(new_distance)
+        # 保持accepted_distances长度不超过max_items
+        if len(self.accepted_distances) > self.max_items:
+            self.accepted_distances.pop(0)
+        # 更新阈值为当前接受距离的中位数
+        self.dist_thresh = np.median(self.accepted_distances)
+
+    # 抽象方法，由子类实现
+    def _compute_embedding(self, data):
+        raise NotImplementedError
+
+    def _do_save(self, data, emb):
+        raise NotImplementedError
+
+    def save_data(self, data):
+        """
+        通用保存流程：
+        1. 计算 embedding
+        2. 判断相似度，决定保存、替换或过滤
+        3. 自动调整阈值
+        """
+        emb = self._compute_embedding(data)
+
+        if np.isnan(emb).any():
+            print("Warning: 计算得到的embedding包含NaN，跳过保存。")
+            return
+
+        total_count = self._get_current_count()
+
+        if total_count < self.min_initial:
+            # 初始阶段，接受所有数据
+            self._do_save(data, emb)
+            # 计算与现有数据的最小距离
+            min_dist = self._get_min_distance(emb)
+            if min_dist < float('inf'):
+                self.accepted_distances.append(min_dist)
+                self._update_threshold(min_dist)
+            else:
+                # 第一个数据点，与自身的距离为0，设置为0
+                self.accepted_distances.append(0.0)
+                self._update_threshold(0.0)
+            return
+
+        # 达到最小初始数量后，判断相似性
+        min_dist = self._get_min_distance(emb)
+        if min_dist < self.dist_thresh:
+            # 如果新数据与现有数据过于相似，则拒绝
+            return
+
+        if total_count < self.max_items:
+            self._do_save(data, emb)
+        else:
+            self._replace_one(data, emb)
+
+        # 更新阈值
+        self._update_threshold(min_dist)
+
+    def batch_save_data(self, data_list):
+        """
+        批量保存流程：
+        1. 批量计算 embeddings
+        2. 对每个数据项进行相似度判断和保存决策
+        """
+        embeddings = self._compute_embeddings_batch(data_list)  # 形状: (B, 512)
+        for data, emb in zip(data_list, embeddings):
+            self.save_data(data)
+
+
+# -------------------- 图像保存器 --------------------
+
+class ResNetFeatureExtractor(nn.Module):
+    """用于图像的 ResNet18 特征提取器"""
+    def __init__(self):
+        super().__init__()
+        backbone = models.resnet18(pretrained=True)
+        self.features = nn.Sequential(*list(backbone.children())[:-1])
+
+    def forward(self, x):
+        with torch.no_grad():
+            feats = self.features(x)
+        return feats.view(feats.size(0), -1)
+
+
+class ImageSaver(BaseSaver):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.transform = T.Compose([
             T.Resize((224,224)),
             T.ToTensor(),
@@ -100,224 +257,129 @@ class ImageSaver:
         ])
         self.feature_extractor = ResNetFeatureExtractor().to(self.device).eval()
 
-        # ================ 索引结构 (HNSW + IDMap) ================
-        self.faiss_index = None
-        self.index2meta = {}
-        if self.use_ann_search:
-            self._init_hnsw_index(dim=512, hnsw_M=hnsw_M, efSearch=efSearch, efConstruction=efConstruction)
-
-        # ================ 不用ANN时, list管理 ================
-        self.saved_embeddings = []
-        self.saved_records = []
-        
-        # ================ 自动调参相关统计 ================
-        # 我们用一个队列记录最近的 (attempt_result) => 1表示"该次图像被保存", 0表示"被过滤"
-        self.history_results = collections.deque(maxlen=self.history_window)
-        # 同时我们统计已经成功保存多少次, 以支持 warmup
-        self.save_count = 0
-
-    def _init_hnsw_index(self, dim=512, hnsw_M=32, efSearch=50, efConstruction=40):
-        # 构建 HNSWFlat 索引 + IDMap
-        hnsw_index = faiss.IndexHNSWFlat(dim, hnsw_M, faiss.METRIC_L2)
-        hnsw_index.hnsw.efSearch = efSearch
-        hnsw_index.hnsw.efConstruction = efConstruction
-        self.faiss_index = faiss.IndexIDMap(hnsw_index)
-
     def _compute_embedding(self, image_np):
-        """
-        将(Height,Width,3) => (1,3,224,224) => (1,512) embedding
-        """
+        """计算输入图像的嵌入向量"""
         img_tensor = self.transform(Image.fromarray(image_np)).unsqueeze(0).to(self.device)
         with torch.no_grad():
             feats = self.feature_extractor(img_tensor)
-        return feats.cpu().numpy()  # (1,512)
+        emb = feats.cpu().numpy().astype('float32')
+        emb = emb / np.linalg.norm(emb, axis=1, keepdims=True)
+        return emb
 
-    def save_image(self, render_image):
-        """
-        主接口:
-          1) 计算embedding
-          2) 计算与已有数据的最小距离
-          3) 若 < dist_thresh => 不保存(too similar)
-          4) 若 >= dist_thresh => 保存/或满库时替换
-          5) 记录本次尝试结果(1 or 0) => 用于自适应调节
-        """
-        emb = self._compute_embedding(render_image)
-        total_count = self._get_current_count()
+    def _compute_embeddings_batch(self, image_list):
+        """批量计算图像嵌入"""
+        tensors = []
+        for img_np in image_list:
+            img = Image.fromarray(img_np)
+            tensors.append(self.transform(img))
+        batch_tensor = torch.stack(tensors).to(self.device)
+        with torch.no_grad():
+            feats = self.feature_extractor(batch_tensor)
+        embeddings = feats.cpu().numpy().astype('float32')
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+        return embeddings
 
-        # (A) 若库空 => 直接保存
-        if total_count == 0:
-            self._do_save(render_image, emb)
-            # 记录: 此次为 "保存成功"
-            self.history_results.append(1)
-            self._try_auto_tune()
-            return
-
-        # (B) 获取min_dist
-        min_dist = self._get_min_distance(emb)
-        # (C) 判断是否过近
-        if min_dist < self.dist_thresh:
-            # 不保存
-            self.history_results.append(0)
-            self._try_auto_tune()
-            return
-
-        # (D) 超过阈值 => 保存或替换
-        if total_count < self.max_images:
-            self._do_save(render_image, emb)
-        else:
-            self._replace_one(render_image, emb)
-        
-        # (E) 记录成功
-        self.history_results.append(1)
-        self._try_auto_tune()
-
-    def _get_current_count(self):
-        if self.use_ann_search:
-            return self.faiss_index.ntotal
-        else:
-            return len(self.saved_embeddings)
-
-    def _get_min_distance(self, emb_new):
-        if self.use_ann_search:
-            distances, ids = self.faiss_index.search(emb_new, k=1)
-            return distances[0][0]
-        else:
-            compare_size = min(self.sample_compare_size, len(self.saved_embeddings))
-            indices = random.sample(range(len(self.saved_embeddings)), compare_size)
-            min_dist = float('inf')
-            for idx in indices:
-                dist = np.linalg.norm(self.saved_embeddings[idx] - emb_new[0])
-                if dist < min_dist:
-                    min_dist = dist
-            return min_dist
-
-    def _do_save(self, render_image, emb):
-        """
-        真的往磁盘写文件 + 写索引/列表
-        """
+    def _do_save(self, image, emb):
+        """保存图像文件及更新索引/列表"""
         file_name = f"image_{self.current_global_id:06d}.png"
         file_path = os.path.join(self.output_dir, file_name)
-        Image.fromarray(render_image).save(file_path)
+        Image.fromarray(image).save(file_path)
 
         if self.use_ann_search:
             self.faiss_index.add_with_ids(emb, np.array([self.current_global_id], dtype=np.int64))
             self.index2meta[self.current_global_id] = {"filename": file_name}
         else:
-            self.saved_embeddings.append(emb[0])
+            self.saved_embeddings = torch.cat([
+                self.saved_embeddings, 
+                torch.from_numpy(emb).to(self.device)
+            ], dim=0)
             self.saved_records.append((self.current_global_id, file_name))
 
         self.current_global_id += 1
-        self.save_count += 1  # 成功保存次数+1
 
-    def _replace_one(self, render_image, emb):
-        """
-        当库满时, 执行替换策略
-        """
-        if self.replace_strategy == "random":
-            self._replace_random(render_image, emb)
-        elif self.replace_strategy == "nearest":
-            self._replace_nearest(render_image, emb)
-        else:
-            # 未知策略 => 不保存
-            pass
 
-    def _replace_random(self, render_image, emb):
-        count = self._get_current_count()
-        if count == 0:
-            return
+# -------------------- 点云保存器 --------------------
+
+class SimplePointNetFeatureExtractor(nn.Module):
+    """简单且稳定的点云特征提取器，将 [N,6] 点云转换为512维向量"""
+    def __init__(self, input_dim=6, output_dim=512):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.BatchNorm1d(64),
+            nn.LeakyReLU(),
+            nn.Linear(64, 128),
+            nn.BatchNorm1d(128),
+            nn.LeakyReLU(),
+            nn.Linear(128, output_dim)
+        )
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        B, N, D = x.size()
+        x = x.view(B * N, D)
+        feats = self.mlp(x)
+        feats = feats.view(B, N, -1)
+        feats_mean = feats.mean(dim=1)
+        norm = feats_mean.norm(p=2, dim=1, keepdim=True) + 1e-10
+        return feats_mean / norm
+
+
+class PointCloudSaver(BaseSaver):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.feature_extractor = SimplePointNetFeatureExtractor(input_dim=6, output_dim=512)\
+                                    .to(self.device).eval()
+
+    def _compute_embedding(self, pointcloud_np):
+        """计算输入点云的嵌入向量"""
+        if pointcloud_np.ndim != 2 or pointcloud_np.shape[1] != 6:
+            raise ValueError(f"点云数据应为形状[N,6]，当前形状为{pointcloud_np.shape}")
+        pc_tensor = torch.from_numpy(pointcloud_np).float().unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            feats = self.feature_extractor(pc_tensor)
+        emb = feats.cpu().numpy().astype('float32')
+        if not np.all(np.isfinite(emb)):
+            print("Warning: 特征提取后得到的embedding存在非有限值，进行归一化处理。")
+            emb = np.nan_to_num(emb, nan=0.0, posinf=1e6, neginf=-1e6)
+            norm = np.linalg.norm(emb, axis=1, keepdims=True) + 1e-10
+            emb = emb / norm
+        return emb
+
+    def _compute_embeddings_batch(self, pointcloud_list):
+        """批量计算点云嵌入"""
+        tensors = []
+        for pc in pointcloud_list:
+            if pc.ndim != 2 or pc.shape[1] != 6:
+                raise ValueError(f"点云数据应为形状[N,6]，当前形状为{pc.shape}")
+            tensors.append(torch.from_numpy(pc).float())
+        batch_tensor = torch.stack(tensors).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            feats = self.feature_extractor(batch_tensor)
+        embeddings = feats.cpu().numpy().astype('float32')
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+        return embeddings
+
+    def _do_save(self, pointcloud, emb):
+        """保存点云文件及更新索引/列表"""
+        file_name = f"pointcloud_{self.current_global_id:06d}"
+        file_path = os.path.join(self.output_dir, file_name)
+        np.save(file_path, pointcloud)
+
         if self.use_ann_search:
-            old_id = random.choice(list(self.index2meta.keys()))
-            self._remove_by_id(old_id)
-            self._do_save(render_image, emb)
+            self.faiss_index.add_with_ids(emb, np.array([self.current_global_id], dtype=np.int64))
+            self.index2meta[self.current_global_id] = {"filename": file_name}
         else:
-            idx = random.randrange(len(self.saved_records))
-            old_id, old_fname = self.saved_records[idx]
-            old_path = os.path.join(self.output_dir, old_fname)
-            if os.path.exists(old_path):
-                os.remove(old_path)
-            self.saved_embeddings.pop(idx)
-            self.saved_records.pop(idx)
-            self._do_save(render_image, emb)
+            self.saved_embeddings = torch.cat([
+                self.saved_embeddings,
+                torch.from_numpy(emb).to(self.device)
+            ], dim=0)
+            self.saved_records.append((self.current_global_id, file_name))
 
-    def _replace_nearest(self, render_image, emb):
-        count = self._get_current_count()
-        if count == 0:
-            return
-        if self.use_ann_search:
-            distances, ids = self.faiss_index.search(emb, k=1)
-            old_id = ids[0][0]
-            self._remove_by_id(old_id)
-            self._do_save(render_image, emb)
-        else:
-            best_dist = float('inf')
-            best_idx = 0
-            for i, old_emb in enumerate(self.saved_embeddings):
-                dist = np.linalg.norm(old_emb - emb[0])
-                if dist < best_dist:
-                    best_dist = dist
-                    best_idx = i
-            old_id, old_fname = self.saved_records[best_idx]
-            old_path = os.path.join(self.output_dir, old_fname)
-            if os.path.exists(old_path):
-                os.remove(old_path)
-            self.saved_embeddings.pop(best_idx)
-            self.saved_records.pop(best_idx)
-            self._do_save(render_image, emb)
-
-    def _remove_by_id(self, old_id):
-        """
-        删除 old_id 对应的数据(索引 & 文件)
-        """
-        if self.use_ann_search:
-            remove_ids = np.array([old_id], dtype=np.int64)
-            self.faiss_index.remove_ids(remove_ids)
-            meta = self.index2meta.pop(old_id, None)
-            if meta is not None:
-                old_path = os.path.join(self.output_dir, meta["filename"])
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-        else:
-            # 已在替换函数里做了删除
-            pass
-
-    # ================ 自动调节 dist_thresh 逻辑 ================
-    def _try_auto_tune(self):
-        """
-        在每次保存/过滤后，都调用一次，检查:
-          1) 是否启用了auto_tune
-          2) 是否已经过了warmup阶段
-          3) 统计最近history_window次尝试的接受率
-          4) 若低于 target_accept_ratio => dist_thresh增大
-             若高于 upper_accept_ratio  => dist_thresh减小
-          5) 可对dist_thresh做安全范围限制, 比如>=1, <=1e5等
-        """
-        if not self.auto_tune:
-            return
-
-        # 是否已达 warmup_saves 次数(指成功保存次数)
-        if self.save_count < self.warmup_saves:
-            return
-
-        # 若history不够(少于history_window次尝试), 等凑满后再调
-        if len(self.history_results) < self.history_window:
-            return
-
-        # 计算最近 history_window 次的接受率
-        arr = list(self.history_results)  # 0/1
-        accept_ratio = sum(arr) / len(arr)
-
-        if accept_ratio < self.target_accept_ratio:
-            # 增加dist_thresh => 更宽松 => 更多保存
-            old_val = self.dist_thresh
-            self.dist_thresh *= (1.0 + self.adjust_factor)
-            # 你可在此加日志:
-            # print(f"[AutoTune] Accept ratio={accept_ratio:.2f}< target={self.target_accept_ratio}, dist_thresh {old_val:.2f}=>{self.dist_thresh:.2f}")
-        elif accept_ratio > self.upper_accept_ratio:
-            # 减小dist_thresh => 更严格 => 更少保存
-            old_val = self.dist_thresh
-            self.dist_thresh *= (1.0 - self.adjust_factor)
-            # print(f"[AutoTune] Accept ratio={accept_ratio:.2f}> upper={self.upper_accept_ratio}, dist_thresh {old_val:.2f}=>{self.dist_thresh:.2f}")
-        
-        # 限制一下 dist_thresh 范围, 防止无限大或接近0
-        self.dist_thresh = max(self.dist_thresh, 1.0)
-        self.dist_thresh = min(self.dist_thresh, 10.0)
+        self.current_global_id += 1
