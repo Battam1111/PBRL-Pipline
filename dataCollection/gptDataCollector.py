@@ -12,7 +12,7 @@ API_URL = "https://api.openai.com/v1/chat/completions"
 BATCH_API_URL = "https://api.openai.com/v1/batches"
 FILES_API_URL = "https://api.openai.com/v1/files"
 
-API_KEY = "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"  # 请替换为实际的 API 密钥
+
 MODEL = "gpt-4o-2024-11-20"
 
 # 系统 Prompt，用于指导 GPT-4O 行为
