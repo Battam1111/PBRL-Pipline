@@ -130,7 +130,7 @@ class SawyerSoccerEnvV2(SawyerXYZEnv):
             extractor = ScenePointCloudExtractor(
                 self.model, 
                 self.data, 
-                task_related_body_names=["soccer_ball", "goal_whole", "mocap", "hand"]
+                task_related_body_names=["soccer_ball", "goal_whole", "hand"]
                 )
             point_cloud = extractor.extract_point_cloud()
 

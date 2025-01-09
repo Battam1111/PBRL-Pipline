@@ -185,8 +185,8 @@ Based on the text below to the questions:
 {}
 
 Is the objective better achieved in Point Cloud 1 or Point Cloud 2?
-Reply a single line of 1 if the goal is better achieved in Point Cloud 1, or 2 if it is better achieved in Point Cloud 2.
-Reply 0 if the text is unsure or there is no difference.
+Reply a single line of 0 if the goal is better achieved in Point Cloud 1, or 1 if it is better achieved in Point Cloud 2.
+Reply -1 if the text is unsure or there is no difference.
 """
 
 # 根据环境生成不同目标评估模板

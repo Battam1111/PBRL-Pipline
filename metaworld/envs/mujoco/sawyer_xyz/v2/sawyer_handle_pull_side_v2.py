@@ -67,7 +67,7 @@ class SawyerHandlePullSideEnvV2(SawyerXYZEnv):
             extractor = ScenePointCloudExtractor(
                 self.model, 
                 self.data, 
-                task_related_body_names=["box", "mocap", "hand"]
+                task_related_body_names=["box", "hand"]
                 )
             point_cloud = extractor.extract_point_cloud()
 

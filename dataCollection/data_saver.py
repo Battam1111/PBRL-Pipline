@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import random
-import collections
 from PIL import Image
 
 import torch
@@ -9,7 +8,7 @@ import torch.nn as nn
 import torchvision.models as models
 import torchvision.transforms as T
 
-import faiss  # pip install faiss-gpu
+import faiss  # pip install faiss-gpu 或 faiss-cpu
 
 
 # -------------------- 通用基类 --------------------
@@ -23,13 +22,13 @@ class BaseSaver:
         self, 
         task,
         output_dir, 
-        max_items=1000,
+        max_items=500, # 450个就足够组10w条偏好对数据
         sample_compare_size=256,
         use_ann_search=True,
         replace_strategy="random",
-        hnsw_M=32,
-        efSearch=50,
-        efConstruction=40
+        faiss_index_type='flat',  # 新增参数，用于选择FAISS索引类型
+        dim=512,
+        **faiss_kwargs
     ):
         # 基本参数设置
         self.task = task
@@ -49,34 +48,44 @@ class BaseSaver:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.faiss_index = None
         self.index2meta = {}
+        self.dim = dim  # 嵌入向量维度
         if self.use_ann_search:
-            self._init_faiss_gpu_index(dim=512, hnsw_M=hnsw_M, efSearch=efSearch, efConstruction=efConstruction)
+            self._init_faiss_index(index_type=faiss_index_type, dim=self.dim, **faiss_kwargs)
 
-        # 使用GPU张量存储嵌入
-        self.saved_embeddings = torch.empty((0, 512), device=self.device)
+        # 使用GPU张量存储嵌入（非ANN模式下使用）
+        self.saved_embeddings = torch.empty((0, self.dim), device=self.device)
         self.saved_records = []
 
         # 用于动态阈值调整的记录
         self.accepted_distances = []
 
         # 初始阶段的最小接受数量，内部参数无需用户干预
-        self.min_initial = min(50, self.max_items)
+        self.min_initial = min(int(self.max_items * 0.05), self.max_items)
 
         # 初始化阈值为 None，表示尚未设置
         self.dist_thresh = None
 
-    def _init_faiss_gpu_index(self, dim, hnsw_M, efSearch, efConstruction):
-        """初始化 FAISS GPU HNSW 索引"""
-        res = faiss.StandardGpuResources()
-        hnsw_index = faiss.IndexHNSWFlat(dim, hnsw_M, faiss.METRIC_L2)
-        hnsw_index.hnsw.efSearch = efSearch
-        hnsw_index.hnsw.efConstruction = efConstruction
-        gpu_index = faiss.index_cpu_to_gpu(res, 0, hnsw_index)
-        self.faiss_index = faiss.IndexIDMap(gpu_index)
+    def _init_faiss_index(self, index_type='flat', dim=512, **faiss_kwargs):
+        """
+        初始化 FAISS 索引，支持多种索引类型。
+        使用CPU上的IndexFlatL2以支持remove_ids操作。
+        """
+        if index_type == 'flat':
+            index = faiss.IndexFlatL2(dim)
+        else:
+            raise ValueError(f"Unsupported FAISS index type: {index_type}")
+
+        # 使用IndexIDMap2以支持ID映射和删除操作
+        self.faiss_index = faiss.IndexIDMap2(index)
+
+        # 注意：这里不进行 GPU 转换，以确保remove_ids可用。
 
     def _get_current_count(self):
         """获取当前已保存的数据数量"""
-        return self.faiss_index.ntotal if self.use_ann_search else self.saved_embeddings.size(0)
+        if self.use_ann_search:
+            return self.faiss_index.ntotal
+        else:
+            return self.saved_embeddings.size(0)
 
     def _get_min_distance(self, emb_new):
         """
@@ -103,6 +112,8 @@ class BaseSaver:
             self._replace_random(data, emb)
         elif self.replace_strategy == "nearest":
             self._replace_nearest(data, emb)
+        else:
+            raise ValueError(f"Unsupported replace strategy: {self.replace_strategy}")
 
     def _replace_random(self, data, emb):
         """随机替换已有数据"""
@@ -131,7 +142,7 @@ class BaseSaver:
             return
         if self.use_ann_search:
             distances, ids = self.faiss_index.search(emb, k=1)
-            old_id = ids[0][0]
+            old_id = int(ids[0][0])
             self._remove_by_id(old_id)
         else:
             distances = torch.norm(self.saved_embeddings - emb, dim=1)
@@ -148,15 +159,37 @@ class BaseSaver:
         self._do_save(data, emb)
 
     def _remove_by_id(self, old_id):
-        """删除指定ID的数据及其对应的文件和索引信息"""
+        """
+        使用 FAISS 提供的 remove_ids 方法通过ID删除指定数据，并清理相关资源。
+        """
+        # 移除文件和meta信息
+        meta = self.index2meta.pop(old_id, None)
+        if meta:
+            old_path = os.path.join(self.output_dir, meta["filename"])
+            if os.path.exists(old_path):
+                os.remove(old_path)
+
+        # 使用 FAISS 的 remove_ids 方法删除索引中的数据
         if self.use_ann_search:
-            remove_ids = np.array([old_id], dtype=np.int64)
-            self.faiss_index.remove_ids(remove_ids)
-            meta = self.index2meta.pop(old_id, None)
-            if meta:
-                old_path = os.path.join(self.output_dir, meta["filename"])
-                if os.path.exists(old_path):
-                    os.remove(old_path)
+            try:
+                id_array = np.array([old_id], dtype=np.int64)
+                self.faiss_index.remove_ids(id_array)
+            except Exception as e:
+                print(f"Warning: 删除ID {old_id}时出错：{e}")
+
+        # 更新 non-ANN模式下的数据结构
+        if not self.use_ann_search:
+            new_records = []
+            indices_to_keep = []
+            for idx, (record_id, fname) in enumerate(self.saved_records):
+                if record_id != old_id:
+                    new_records.append((record_id, fname))
+                    indices_to_keep.append(idx)
+            self.saved_records = new_records
+            if indices_to_keep:
+                self.saved_embeddings = self.saved_embeddings[indices_to_keep]
+            else:
+                self.saved_embeddings = torch.empty((0, self.dim), device=self.device)
 
     def _update_threshold(self, new_distance):
         """
@@ -172,6 +205,9 @@ class BaseSaver:
 
     # 抽象方法，由子类实现
     def _compute_embedding(self, data):
+        raise NotImplementedError
+
+    def _compute_embeddings_batch(self, data_list):
         raise NotImplementedError
 
     def _do_save(self, data, emb):
@@ -208,6 +244,10 @@ class BaseSaver:
 
         # 达到最小初始数量后，判断相似性
         min_dist = self._get_min_distance(emb)
+
+        if self.dist_thresh is None:
+            self.dist_thresh = 0.0  # 若尚未设置阈值，则初始为0
+
         if min_dist < self.dist_thresh:
             # 如果新数据与现有数据过于相似，则拒绝
             return
@@ -359,7 +399,7 @@ class PointCloudSaver(BaseSaver):
             if pc.ndim != 2 or pc.shape[1] != 6:
                 raise ValueError(f"点云数据应为形状[N,6]，当前形状为{pc.shape}")
             tensors.append(torch.from_numpy(pc).float())
-        batch_tensor = torch.stack(tensors).unsqueeze(0).to(self.device)
+        batch_tensor = torch.stack(tensors).to(self.device)
         with torch.no_grad():
             feats = self.feature_extractor(batch_tensor)
         embeddings = feats.cpu().numpy().astype('float32')
@@ -368,7 +408,7 @@ class PointCloudSaver(BaseSaver):
 
     def _do_save(self, pointcloud, emb):
         """保存点云文件及更新索引/列表"""
-        file_name = f"pointcloud_{self.current_global_id:06d}"
+        file_name = f"pointcloud_{self.current_global_id:06d}.npy"
         file_path = os.path.join(self.output_dir, file_name)
         np.save(file_path, pointcloud)
 

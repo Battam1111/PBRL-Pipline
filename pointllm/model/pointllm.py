@@ -28,7 +28,6 @@ class PointLLMLlamaModel(LlamaModel):
 
     def __init__(self, config: LlamaConfig):
         super(PointLLMLlamaModel, self).__init__(config)
-
         self.point_backbone_type = config.point_backbone
         logger.info(f"Using {self.point_backbone_type}.")
 
@@ -96,15 +95,19 @@ class PointLLMLlamaModel(LlamaModel):
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        point_clouds: Optional[torch.FloatTensor] = None,
+        
+        #point_clouds: Optional[torch.FloatTensor] = None,
+        #我们进行了修改之后我们传入的point_clouds可能是一个np.array([point_cloud1,point_cloud2]);
+        #这里的类型是torch.FloatTensor，所以类型需要重新定义；
+        point_clouds: Optional[Union[torch.FloatTensor, List[torch.FloatTensor]]] = None, #这一句的意思是point_clouds可以是一个torch.FloatTensor，也可以是一个List[torch.FloatTensor]；
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
-
+ 
         # HACK: replace back original embeddings for pretraining
         orig_embeds_params = getattr(self, 'orig_embeds_params', None)
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+            inputs_embeds = self.embed_tokens(input_ids) #此时input_ids还是含着32000 这个sp token
 
         point_backbone = getattr(self, 'point_backbone', None)
         point_backbone_config = getattr(self, 'point_backbone_config', None)
@@ -114,61 +117,140 @@ class PointLLMLlamaModel(LlamaModel):
             with torch.no_grad() if self.fix_pointnet else nullcontext():
                 if self.fix_pointnet:
                     self.point_backbone.eval()
-                if type(point_clouds) is list:
-                    # * variable numbers of points
+                    
+                #怎么可能是个list；直接进6个也不是list啊？要不直接改训练代码？
+                #先用单个点云的数据集，然后bs设为大于1看看，会不会过这个。。判断。
+                # 发现pc是一个batch地进的,但是这里的type;
+                if type(point_clouds) is list or len(point_clouds.shape) == 4:
+                    # * variable numbers of points #下面还用了unsqueeze(0)，所以其实这里作者是认为传入的也是三维的数据，只是以防第三维度是个list;
+                    # point_features = []
+                    # for point_cloud in point_clouds: # * iterate over batch
+                    #     point_feature = self.point_backbone(point_cloud.unsqueeze(0))[0]
+                    #     point_features.append(point_feature)
+                    
                     point_features = []
-                    for point_cloud in point_clouds: # * iterate over batch
-                        point_feature = self.point_backbone(point_cloud.unsqueeze(0))[0]
-                        point_features.append(point_feature)
+                    for point_cloud in point_clouds:
+                        point_feature = self.point_backbone(point_cloud) #传入的是[2,8192,6] 数据，这里的2是一个样本的两个点云，当成bs=2 进行处理；
+                        point_features.append(point_feature) # [2,8192,6]  -> [2,513,384]; 然后append到point_features里面-> [bs,2,513,384]
                 else:
-                    point_features = self.point_backbone(point_clouds)
-
-            if type(point_clouds) is list:
-                point_features = [self.point_proj(point_feature) for point_feature in point_features]
+                    point_features = self.point_backbone(point_clouds) #此时的6个点云对象[6,8192,6],在这里过点云encoder。注意：这里6个是和6个文本一一对应的，一会是按照什么indice把embedding贴回去还不确定。我估计是只支持单点云each sample；
+                                                                        # encoding 出来的尺寸为[6,513,384] 应该是还没有padding的。*这里一个bs多个点云，比如4个点云[4.8192,6]->这里是直接一次性过encoder的；如果传入是的是list of 点云，list的个数和bs size的排序还得看看；
+            if type(point_clouds) is list or len(point_clouds.shape) == 4:
+                
+                point_features = [self.point_proj(point_feature) for point_feature in point_features]  ##如果点云是个list就逐个过projector; 
+                # [bs,2,513,384] 逐个过projector-> [bs,2,513,5120]  
             else:
-                point_features = self.point_proj(point_features)
-
-            dummy_point_features = torch.zeros(point_backbone_config['point_token_len'], point_backbone_config['backbone_output_dim'], device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-            dummy_point_features = self.point_proj(dummy_point_features)
+                point_features = self.point_proj(point_features) ##过完encoder之后[6, 513, 5120] sample1 p
+            #这里的dummy_point_features只适用于原版代码，咱们改的需要在下面按需求补充一个维度。
+            dummy_point_features = torch.zeros(point_backbone_config['point_token_len'], point_backbone_config['backbone_output_dim'], device=inputs_embeds.device, dtype=inputs_embeds.dtype) #[513, 384]
+            dummy_point_features = self.point_proj(dummy_point_features) #[513, 5120]
 
             new_input_embeds = []
             cur_point_idx = 0
-            for cur_input_ids, cur_input_embeds in zip(input_ids, inputs_embeds): # * input_ids: B, L; input_embeds: B, L, C
-                if (cur_input_ids == point_backbone_config['point_patch_token']).sum() == 0:
-                    # multimodal LLM, but the current sample is not multimodal
-                    cur_input_embeds = cur_input_embeds + (0. * dummy_point_features).sum() # * do nothing
-                    new_input_embeds.append(cur_input_embeds)
-                    cur_point_idx += 1
-                    continue
-                cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device)
-                num_patches = cur_point_features.shape[0] # * number of point tokens
-                if point_backbone_config['mm_use_point_start_end']:
-                    if (cur_input_ids == point_backbone_config["point_start_token"]).sum() != (cur_input_ids == point_backbone_config["point_end_token"]).sum():
-                        raise ValueError("The number of point start tokens and point end tokens should be the same.")
-                    point_start_tokens = torch.where(cur_input_ids == point_backbone_config["point_start_token"])[0]
-                    for point_start_token_pos in point_start_tokens:
-                        if cur_input_ids[point_start_token_pos + num_patches + 1] != point_backbone_config["point_end_token"]:
-                            raise ValueError("The point end token should follow the point start token.")
-                        if orig_embeds_params is not None: # * will not update the original embeddings except for POINT_START_TOKEN and POINT_END_TOKEN
-                            cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos].detach(), cur_input_embeds[point_start_token_pos:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:point_start_token_pos + num_patches + 2], cur_input_embeds[point_start_token_pos + num_patches + 2:].detach()), dim=0)
-                        else:
-                            cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:]), dim=0)
+            if type(point_clouds) is list or len(point_clouds.shape) == 4:
+                for cur_input_ids, cur_input_embeds in zip(input_ids, inputs_embeds):
+                    #按道理这里应该放在新dummy_point_features定义完之后的地方。
+                    if (cur_input_ids == point_backbone_config['point_patch_token']).sum() == 0:
+                        #这里查的是input_ids;
+                        # multimodal LLM, but the current sample is not multimodal #当前样本没有点云；
+                        cur_input_embeds = cur_input_embeds + (0. * dummy_point_features).sum() # * do nothing
+                        new_input_embeds.append(cur_input_embeds)
                         cur_point_idx += 1
-                    new_input_embeds.append(cur_new_input_embeds)
-                else:
-                    if (cur_input_ids == point_backbone_config["point_patch_token"]).sum() != num_patches:
-                        raise ValueError("The number of point patch tokens should be the same as the number of point patches.")
-                    masked_indices = torch.where(cur_input_ids == point_backbone_config["point_patch_token"])[0]
-                    mask_index_start = masked_indices[0]
-                    if (masked_indices != torch.arange(mask_index_start, mask_index_start+num_patches, device=masked_indices.device, dtype=masked_indices.dtype)).any():
-                        raise ValueError("The point patch tokens should be consecutive.")
-                    if orig_embeds_params is not None:
-                        cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start].detach(), cur_point_features, cur_input_embeds[mask_index_start+num_patches:].detach()), dim=0)
+                        continue
+                    
+                    # [bs,2,513,5120]  ; cur_point_idx = 0;  point_features[0] -> [2,513,5120]
+                    cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device)
+                    num_points = cur_point_features.shape[0] #我们这里为2
+                    num_patches = num_points * cur_point_features.shape[1] # 取patch个数，这里本来可以推广为num*cur_point_features.shape[1]，但是当前只需要支持2个点云；故直接乘以2；
+                    #TODO:
+                    #重新定义dummy_point_features;其实dummy_point_features就是当样本中没有pc的时候用的。所以应该放上去；上面下面用不着了。
+                    dummy_point_features = torch.zeros(num_points, point_backbone_config['point_token_len'], point_backbone_config['backbone_output_dim'], device=inputs_embeds.device, dtype=inputs_embeds.dtype) #[2,513, 384]
+                    dummy_point_features = [self.point_proj(dummy_point_feature) for dummy_point_feature in dummy_point_features] #[2,513,5120]
+                    
+                    if point_backbone_config['mm_use_point_start_end']:
+                        # 在input_ids中找patch开始的位置；这里会返回一个数组；应该我们有2个点云，所以有两个点云开始位置；
+                        point_start_tokens = torch.where(cur_input_ids == point_backbone_config["point_start_token"])[0] # 返回的是tensor ([index,index],),所以要取0；
+                        point_end_tokens = torch.where(cur_input_ids == point_backbone_config["point_end_token"])[0] # 返回的是tensor ([index,index],),所以要取0；
+                        
+                        # #point patch token 头尾对应
+                        if (cur_input_ids == point_backbone_config["point_start_token"]).sum() != (cur_input_ids == point_backbone_config["point_end_token"]).sum():
+                            raise ValueError("The number of point start tokens and point end tokens should be the same.") 
+                
+                        # 检查是否与点云数量匹配
+                        if len(point_start_tokens) != num_points:
+                            raise ValueError(f"Number of point_start_tokens ({len(point_start_tokens)}) does not match the number of point features ({num_points}).")
+                                            
+                        
+                        # 遍历每个点云特征，逐一插入
+                        cur_new_input_embeds = cur_input_embeds #每个文本embedding
+                        
+                        for i, (point_start_token_pos, point_end_token_pos, cur_point_feature) in enumerate(zip(point_start_tokens, point_end_tokens, cur_point_features)):                    
+                            
+                            
+                            # 检查 point_end_token 是否正确
+                            if cur_input_ids[point_start_token_pos + cur_point_feature.shape[0] + 1] != point_backbone_config["point_end_token"]:
+                                raise ValueError(f"The point end token should follow the point start token for point {i}.")
+
+                            if orig_embeds_params is not None: # 
+                                raise NotImplementedError("orig_embeds_params is not None 的情况下；还没写！")
+                            else:
+                                # 构造新的嵌入
+                                cur_new_input_embeds = torch.cat((
+                                    cur_new_input_embeds[:point_start_token_pos + 1],  # 保留 start token 之前的嵌入
+                                    cur_point_feature,                                # 插入当前点云特征
+                                    cur_new_input_embeds[point_end_token_pos:]        # 保留 end token 之后的嵌入
+                                ), dim=0)
+
+                                
                     else:
-                        cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start], cur_point_features, cur_input_embeds[mask_index_start+num_patches:]), dim=0)
-                    new_input_embeds.append(cur_new_input_embeds)
-                    cur_point_idx += 1
-            inputs_embeds = torch.stack(new_input_embeds, dim=0)
+                        #point_backbone_config['mm_use_point_start_end'] 没有使用的情况下；
+                        #throw an error to remind me that i didn't implement this part;
+                        raise NotImplementedError("point_backbone_config['mm_use_point_start_end'] 没有使用的情况下；还没写！") 
+                    
+                    cur_point_idx += 1 
+                    new_input_embeds.append(cur_new_input_embeds)   
+                          
+                inputs_embeds = torch.stack(new_input_embeds, dim=0)
+            else:
+                for cur_input_ids, cur_input_embeds in zip(input_ids, inputs_embeds): # * input_ids: B, L; input_embeds: B, L, C
+                    if (cur_input_ids == point_backbone_config['point_patch_token']).sum() == 0:
+                        #这里查的是input_ids;
+                        # multimodal LLM, but the current sample is not multimodal #当前样本没有点云；
+                        cur_input_embeds = cur_input_embeds + (0. * dummy_point_features).sum() # * do nothing
+                        new_input_embeds.append(cur_input_embeds)
+                        cur_point_idx += 1
+                        continue
+                    cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device)
+                    num_patches = cur_point_features.shape[0] # * number of point tokens ;取 [513, 5120]) 的[0] 本质上是取patch token的数量- len
+                    if point_backbone_config['mm_use_point_start_end']:
+                        if (cur_input_ids == point_backbone_config["point_start_token"]).sum() != (cur_input_ids == point_backbone_config["point_end_token"]).sum():
+                            raise ValueError("The number of point start tokens and point end tokens should be the same.") #point patch token 头尾对应
+                        point_start_tokens = torch.where(cur_input_ids == point_backbone_config["point_start_token"])[0] # 在input_ids中找patch开始的位置；
+                        
+                        #point start token位置和点云一起遍历；
+                        for point_start_token_pos in point_start_tokens:
+                            if cur_input_ids[point_start_token_pos + num_patches + 1] != point_backbone_config["point_end_token"]:
+                                raise ValueError("The point end token should follow the point start token.")
+                            if orig_embeds_params is not None: # * will not update the original embeddings except for POINT_START_TOKEN and POINT_END_TOKEN；  
+                                cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos].detach(), cur_input_embeds[point_start_token_pos:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:point_start_token_pos + num_patches + 2], cur_input_embeds[point_start_token_pos + num_patches + 2:].detach()), dim=0)
+                            else:
+                                cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:]), dim=0) # 如果
+                            cur_point_idx += 1
+                        new_input_embeds.append(cur_new_input_embeds)
+                    else:
+                        if (cur_input_ids == point_backbone_config["point_patch_token"]).sum() != num_patches:
+                            raise ValueError("The number of point patch tokens should be the same as the number of point patches.")
+                        masked_indices = torch.where(cur_input_ids == point_backbone_config["point_patch_token"])[0]
+                        mask_index_start = masked_indices[0]
+                        if (masked_indices != torch.arange(mask_index_start, mask_index_start+num_patches, device=masked_indices.device, dtype=masked_indices.dtype)).any():
+                            raise ValueError("The point patch tokens should be consecutive.")
+                        if orig_embeds_params is not None:
+                            cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start].detach(), cur_point_features, cur_input_embeds[mask_index_start+num_patches:].detach()), dim=0)
+                        else:
+                            cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start], cur_point_features, cur_input_embeds[mask_index_start+num_patches:]), dim=0)
+                        new_input_embeds.append(cur_new_input_embeds)
+                        cur_point_idx += 1
+                inputs_embeds = torch.stack(new_input_embeds, dim=0)
 
         return super(PointLLMLlamaModel, self).forward(
             input_ids=None, attention_mask=attention_mask, past_key_values=past_key_values,
@@ -203,7 +285,8 @@ class PointLLMLlamaForCausalLM(LlamaForCausalLM):
         use_cache: Optional[bool] = None, # * control whether to return past_key_values
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        point_clouds: Optional[torch.FloatTensor] = None,
+        #point_clouds: Optional[torch.FloatTensor] = None,
+        point_clouds: Optional[Union[torch.FloatTensor, List[torch.FloatTensor]]] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions

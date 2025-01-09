@@ -137,7 +137,7 @@ class SawyerPegInsertionSideEnvV2(SawyerXYZEnv):
             extractor = ScenePointCloudExtractor(
                 self.model, 
                 self.data, 
-                task_related_body_names=["peg", "box", "mocap", "hand"]
+                task_related_body_names=["peg", "box", "hand"]
                 )
             point_cloud = extractor.extract_point_cloud()
 

@@ -120,7 +120,7 @@ class SawyerDoorEnvV2(SawyerXYZEnv):
             extractor = ScenePointCloudExtractor(
                 self.model, 
                 self.data, 
-                task_related_body_names=["door", "goal", "mocap", "hand"]
+                task_related_body_names=["door", "goal", "hand"]
                 )
             point_cloud = extractor.extract_point_cloud()
 

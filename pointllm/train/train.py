@@ -37,17 +37,17 @@ DEFAULT_BOS_TOKEN = "</s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
 
-@dataclass
+@dataclass 
 class ModelArguments:
-    model_name_or_path: Optional[str] = field(default="")
+    model_name_or_path: Optional[str] = field(default="/code/syr/PointLLM/checkpoints/PointLLM_13B_v1.2")
     version: Optional[str] = field(default="v1")
 
 @dataclass
 class DataArguments:
-    data_path: str = field(default="ScanNet", metadata={"help": "Path to the training data."})
-    anno_path: str = field(default=None, metadata={"help": "Path to the utterance data. If None, will use referit3d by defautl."})
-    use_color: bool = field(default=False, metadata={"help": "Whether to use color."})
-    data_debug_num: int = field(default=0, metadata={"help": "Number of data to use in debug mode. If larger than 0, use debug mode, else use the whole data"})
+    data_path: str = field(default="/code/syr/PointLLM/data/objaverse_data", metadata={"help": "Path to the training data."})
+    anno_path: str = field(default="/code/syr/PointLLM/data/anno_data/PointLLM_brief_description_660K_combined.json", metadata={"help": "Path to the utterance data. If None, will use referit3d by defautl."})
+    use_color: bool = field(default=True, metadata={"help": "Whether to use color."})
+    data_debug_num: int = field(default=-1, metadata={"help": "Number of data to use in debug mode. If larger than 0, use debug mode, else use the whole data"})
     split_train_val: bool = field(default=False, metadata={"help": "Whether to split train and val."})
     split_ratio: float = field(default=0.9, metadata={"help": "Ratio of train and val."})
     pointnum: int = field(default=8192, metadata={"help": "Number of points."})
@@ -57,7 +57,7 @@ class DataArguments:
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     # * can refer to https://huggingface.co/docs/transformers/v4.28.1/en/main_classes/trainer#transformers.TrainingArgument
-    cache_dir: Optional[str] = field(default=None)
+    cache_dir: Optional[str] = field(default="/code/syr/PointLLM/cache_dir")
     optim: str = field(default="adamw_torch")
     model_max_length: int = field(
         default=2048,
@@ -78,6 +78,33 @@ class TrainingArguments(transformers.TrainingArguments):
     # * point backbone ckpt path
     point_backbone_ckpt: str = field(default=None)
 
+    #yirong added
+    output_dir: str = field(default="/code/syr/PointLLM/output/stage1_test_2ob", metadata={"help": "The output directory where the model predictions and checkpoints will be written."})
+    num_train_epochs: int = field(default=1, metadata={"help": "Total number of training epochs to perform."})
+    
+    per_device_train_batch_size: int = field(default=4, metadata={"help": "Batch size per GPU/TPU core/CPU for training."})
+    per_device_eval_batch_size: int = field(default=1, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation."})
+    gradient_accumulation_steps: int = field(default=32, metadata={"help": "Number of updates steps to accumulate before performing a backward/update pass."})
+    evaluation_strategy: str = field(default="no", metadata={"help": "The evaluation strategy to use."})
+    save_strategy: str = field(default="steps", metadata={"help": "The checkpoint save strategy to use."})
+    save_steps: int = field(default=300, metadata={"help": "The number of steps between each checkpoint."})
+    save_total_limit: int = field(default=5, metadata={"help": "The total number of checkpoints to keep."})
+    
+    #hyperparameters
+    learning_rate: float = field(default=3e-5, metadata={"help": "The initial learning rate for Adam."})
+    warmup_ratio: float = field(default=0.1, metadata={"help": "The ratio of warmup steps."})
+    lr_scheduler_type: str = field(default="cosine", metadata={"help": "The learning rate scheduler to use."})
+    logging_steps: int = field(default=1, metadata={"help": "The number of steps between each logging."})
+    bf16: bool = field(default=True, metadata={"help": "Whether to use bfloat16."})
+    
+    #other trainer settings
+    gradient_checkpointing: bool = field(default=True, metadata={"help": "Whether to use gradient checkpointing."})
+    #dont report to wandb
+    report_to: Optional[List[str]] = field(default=None)
+    #run_name ?? 参数是啥
+    point_backbone_ckpt:str = field(default="/code/syr/PointLLM/checkpoints/PointLLM_13B_v1.2/point_bert_v1.2.pt", metadata={"help": "Path to the point backbone checkpoint."})
+    
+    
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
     """Collects the state dict and dump to disk."""
@@ -95,10 +122,15 @@ def train():
     parser = transformers.HfArgumentParser(
         (ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
+    
+    print(training_args.report_to)
+    # if 'wandb' or 'tensorboard' in training_args.report_to :
+    #     training_args.report_to = ['None']
+    # print(training_args.report_to)
+    
     training_args.log_level = "info" # * default is passive(warning)
     # * build logger
-    logger = build_logger(__name__, training_args.output_dir + '/train.log')
+    logger = build_logger(__name__, training_args.output_dir + '/train.log') #对主函数进行log观察
 
     if training_args.model_debug:
         # * do not load checkpoint, load from config
@@ -106,7 +138,7 @@ def train():
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
             )
-        model = PointLLMLlamaForCausalLM._from_config(config)
+        model = PointLLMLlamaForCausalLM._from_config(config)#TODO 确认加载的权重有哪些 done;
     else:
         model = PointLLMLlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
@@ -122,7 +154,7 @@ def train():
         model.requires_grad_(False)
         model.get_model().fix_llm = True
         model.get_model().point_proj.requires_grad_(True) 
-        model.get_model().point_backbone.requires_grad_(True) # * set as True for fsdp, use fix_pointnet flag to control
+        model.get_model().point_backbone.requires_grad_(False) # * set as True for fsdp, use fix_pointnet flag to control
     else:
         model.get_model().fix_llm = False
         logger.warning("LLM is trainable. Fix_llm flag is set to False")
@@ -147,7 +179,7 @@ def train():
         model.get_model().fix_pointnet = False
     else:
         logger.info("Point backbone is fixed. Fix_pointnet flag is set to True, pointnet grad will not be recorded.")
-        model.get_model().fix_pointnet = True # * use with torch.inference_mode to control, not requires_grad for fsdp for second stage
+        model.get_model().fix_pointnet = True # * use with torch.inference_mode to control, not requires_grad for fsdp for second stage TODO 这没看懂啊。。
         if not training_args.stage_2:
             logger.info("Set requires_grad of point backbone to False")
             model.get_model().point_backbone.requires_grad_(False) # * fix pointnet for first stage, need for fsdp in stage2

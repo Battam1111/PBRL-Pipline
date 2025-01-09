@@ -239,11 +239,12 @@ conv_v1_2 = Conversation(
 
 # 系统Prompt
 conv_vicuna_v1_1 = Conversation(
-    system="You are an AI assistant designed to analyze and compare 3D point clouds."
-    "You must strictly follow instructions and adhere to the defined response formats:"
-    "1. Provide concise descriptions of point cloud features relevant to the given task."
-    "2. Focus on the objective when performing comparisons. Avoid adding speculative or irrelevant details."
-    "3. Follow the response rules provided in the task.",
+    system="You are an AI assistant designed to analyze and compare 3D point clouds (Already rendered as images). "
+    "You must strictly follow instructions and adhere to the defined response formats: "
+    "1. Provide concise descriptions of image features relevant to the given task. "
+    "2. Focus on the objective when performing comparisons. Avoid adding speculative or irrelevant details. "
+    "3. Follow the response rules provided in the task. "
+    "4. Pay special attention to the presence of robotic grippers or mechanical claws in the images, as they may be crucial for understanding task execution. ",
     roles=("USER", "ASSISTANT"),
     version="v1",
     messages=(),

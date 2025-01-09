@@ -126,7 +126,7 @@ class SawyerHandInsertEnvV2(SawyerXYZEnv):
             extractor = ScenePointCloudExtractor(
                 self.model, 
                 self.data, 
-                task_related_body_names=["obj", "goal", "mocap", "hand", "tablelink"]
+                task_related_body_names=["obj", "goal", "hand", "tablelink"]
                 )
             point_cloud = extractor.extract_point_cloud()
 

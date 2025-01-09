@@ -13,7 +13,7 @@ from reward_model import RewardModel  # 引入奖励模型模块
 from reward_model_score import RewardModelScore  # 引入基于分数的奖励模型模块
 from collections import deque  # 引入双端队列
 from prompt import clip_env_prompts  # 引入用于提示的环境变量
-from data_saver import ImageSaver, PointCloudSaver  # 保存图像函数
+from dataCollection.data_saver import ImageSaver, PointCloudSaver  # 保存图像函数
 
 import utils  # 实用函数
 import hydra  # 用于配置管理的库

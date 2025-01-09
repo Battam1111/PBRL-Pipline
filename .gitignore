@@ -54,3 +54,5 @@ softgym/PyFlex/bindings/build
 
 checkpoints/
 test/
+dataCollection/Dataset/
+dataCollection/Test/
