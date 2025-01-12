@@ -39,7 +39,7 @@ class Workspace(object):
             agent=cfg.agent.name)  # 初始化日志记录器
         
         # 如果使用 pointllm 两图模式，则初始化 pointllm，并强制切换到 image_reward=True
-        if self.cfg.vlm == 'pointllm_two_image':
+        if self.cfg.vlm == 'pointllm_two_image' and self.cfg.vlm_label == 1:
             init_model()
             print("PointLLM model initialized.")
             # 我们需要实际用图像模型进行奖励学习，因此将 image_reward 置为 True
@@ -101,7 +101,7 @@ class Workspace(object):
         # 初始化点云保存器
         self.pointcloud_saver = PointCloudSaver(
             task=cfg.env,
-            output_dir="/home/star/Yanjun/RL-VLM-F/test/pointclouds",
+            output_dir="/home/star/Yanjun/RL-VLM-F/data/pointclouds",
         )
 
 
@@ -626,12 +626,12 @@ def main(cfg):
     # 手动设置参数
     
     # 设置环境名称
-    cfg.env = 'metaworld_soccer-v2'  # 使用元世界足球环境
+    # cfg.env = 'metaworld_soccer-v2'  # 使用元世界足球环境
     # cfg.env = 'metaworld_drawer-open-v2' # 使用元世界抽屉打开环境
     # cfg.env = 'metaworld_door-open-v2'  # 使用元世界开门环境
     # cfg.env = 'metaworld_peg-insert-side-v2' # 使用元世界插销环境
     # cfg.env = 'metaworld_disassemble-v2' # 使用元世界拆卸环境
-    # cfg.env = 'metaworld_handle-pull-side-v2' # 使用元世界拉手环境
+    cfg.env = 'metaworld_handle-pull-side-v2' # 使用元世界拉手环境
 
     # cfg.env = 'metaworld_hand-insert-v2' # 使用元世界手插入环境（有问题）
     # cfg.env = 'metaworld_sweep-into-v2' # 使用元世界扫描环境（有问题）
@@ -647,7 +647,7 @@ def main(cfg):
     cfg.reward = 'learn_from_preference'  
     
     # 设置视觉语言模型（VLM）的相关参数
-    cfg.vlm_label = 1  # 使用VLM标签
+    cfg.vlm_label = 0  # 使用VLM标签(0/1)
     cfg.vlm = 'pointllm_two_image'  # 使用名为`pointllm_two_image`的VLM模型
     # cfg.vlm = 'gemini_free_form'  # 另一种可选的VLM模型（已注释）
     

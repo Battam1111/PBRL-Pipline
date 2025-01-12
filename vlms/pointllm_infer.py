@@ -219,41 +219,18 @@ def pointllm_query_2(query_list, summary_prompt, temperature=0.01):
             pc1 = farthest_point_sample(pc1, 8192)
         pc1 = pc_norm(pc1)
 
-        # 去除颜色信息，仅保留XYZ坐标
-        # pc1 = pc1[:, :3]
-
         # 预处理点云2
         if pc2.shape[0] > 8192:
             pc2 = farthest_point_sample(pc2, 8192)
         pc2 = pc_norm(pc2)
 
-        # 去除颜色信息，仅保留XYZ坐标
-        # pc2 = pc2[:, :3]
-
         # 将 pc1 和 pc2 保持独立，存储在列表中
-        point_clouds = [
-            torch.from_numpy(pc1).to(torch.bfloat16).to(device),  # 确保形状为 (N, C)
+        point_clouds = torch.stack([
+            torch.from_numpy(pc1).to(torch.bfloat16).to(device),
             torch.from_numpy(pc2).to(torch.bfloat16).to(device)
-        ]
+        ], dim=0)
 
-        # 验证点云数据的形状
-        # for i, point_cloud in enumerate(point_clouds):
-        #     assert point_cloud.dim() == 2, f"Point cloud {i+1} must be 2-dimensional, got {point_cloud.dim()} dimensions."
-        #     assert point_cloud.shape[1] == POINT_BACKBONE_CONFIG['point_cloud_dim'], f"Point cloud {i+1} has incorrect point_dim: {point_cloud.shape[1]}."
-            # print(f"Point cloud {i+1} shape: {point_cloud.shape}")  # 调试信息
 
-        # 保存点云（异步）
-        # try:
-        #     visualizer = PointCloudSaver()  # 初始化保存器
-        #     visualizer.save_point_cloud(pc1)  # 保存 pc1
-        #     visualizer.save_point_cloud(pc2)  # 保存 pc2
-        # except Exception as e:
-        #     print(f"[ERROR in pointllm_query_2 - PointCloudSaver] {e}")
-        #     print(traceback.format_exc())
-
-        # 构建初始对话
-        # 按照预期顺序：USER: -> main_prompt -> Point Cloud 1 -> Point Cloud 2 -> 问题列表 -> ASSISTANT:
-        # 每个点云前都添加 <point_start> 和 <point_patch>
         qs = (
             prompt1 + '\n' +
             default_point_start_token + 

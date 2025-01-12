@@ -570,7 +570,7 @@ class RewardModel:
         
         # 3) 如果需要 VLM 或图像reward，取出图像/点云
         if self.vlm_label or self.image_reward:
-            if self.vlm == 'pointllm_two_image':
+            if self.vlm == 'pointllm_two_image' and self.vlm_label:
                 # 同时取点云数据与图像数据（需确保 self.img_inputs 里也存了图像）
                 train_point_clouds = np.array(self.point_cloud_inputs[:max_len])
                 train_images = np.array(self.img_inputs[:max_len])
@@ -594,7 +594,7 @@ class RewardModel:
 
         # 5) 若需要图像或点云，则同样随机取
         if self.vlm_label or self.image_reward:
-            if self.vlm == 'pointllm_two_image':
+            if self.vlm == 'pointllm_two_image' and self.vlm_label:
                 point_cloud_t_1 = train_point_clouds[batch_index_1]  # (mb_size, traj_len, N*6?)
                 point_cloud_t_2 = train_point_clouds[batch_index_2]
                 img_t_1 = train_images[batch_index_1]                # (mb_size, traj_len, H, W, 3)?
@@ -611,7 +611,7 @@ class RewardModel:
         r_t_2 = r_t_2.reshape(-1, r_t_2.shape[-1])
 
         if self.vlm_label or self.image_reward:
-            if self.vlm == 'pointllm_two_image':
+            if self.vlm == 'pointllm_two_image' and self.vlm_label:
                 # point_cloud
                 point_cloud_t_1 = point_cloud_t_1.reshape(-1, point_cloud_t_1.shape[-1])
                 point_cloud_t_2 = point_cloud_t_2.reshape(-1, point_cloud_t_2.shape[-1])
@@ -643,7 +643,7 @@ class RewardModel:
 
         # 同理取出图像或点云
         if self.vlm_label or self.image_reward:
-            if self.vlm == 'pointllm_two_image':
+            if self.vlm == 'pointllm_two_image' and self.vlm_label:
                 point_cloud_t_1 = np.take(point_cloud_t_1, time_index_1, axis=0).squeeze(1)
                 point_cloud_t_2 = np.take(point_cloud_t_2, time_index_2, axis=0).squeeze(1)
                 img_t_1 = np.take(img_t_1, time_index_1, axis=0)
@@ -671,7 +671,7 @@ class RewardModel:
         if not self.vlm_label and not self.image_reward:
             return sa_t_1, sa_t_2, r_t_1, r_t_2
         else:
-            if self.vlm == 'pointllm_two_image':
+            if self.vlm == 'pointllm_two_image' and self.vlm_label:
                 # 返回：状态动作、奖励、点云、以及图像
                 return sa_t_1, sa_t_2, r_t_1, r_t_2, point_cloud_t_1, point_cloud_t_2, img_t_1, img_t_2
             else:

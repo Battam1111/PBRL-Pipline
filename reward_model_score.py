@@ -14,7 +14,8 @@ import cv2
 
 from scipy.stats import norm
 
-from vlms.gpt4_infer import gpt4v_infer
+# 暂时用不上，先注释
+# from vlms.gpt4_infer import gpt4v_infer
 from PIL import Image
 import datetime
 import pickle as pkl

@@ -1,7 +1,7 @@
-import open3d as o3d
-import numpy as np
 import os
-import glob
+import numpy as np
+import open3d as o3d
+from PIL import Image
 
 class PointCloudRenderer:
     def __init__(self, 
@@ -75,9 +75,9 @@ class PointCloudRenderer:
             pcd.colors = o3d.utility.Vector3dVector(colors)
         return pcd
 
-    def render_single(self, pcd, output_png):
+    def render_single(self, pcd, output_jpg):
         """
-        渲染单个点云对象并保存为 PNG 图像。
+        渲染单个点云对象并保存为 JPEG 图像以提高压缩效率。
         """
         renderer = o3d.visualization.rendering.OffscreenRenderer(self.width, self.height)
         scene = renderer.scene
@@ -90,14 +90,18 @@ class PointCloudRenderer:
         scene.set_background(self.background_color)
         renderer.setup_camera(self.fov, self.camera_target, self.camera_location, self.camera_up)
 
+        # 获取渲染的图像
         img = renderer.render_to_image()
-
-        os.makedirs(os.path.dirname(output_png), exist_ok=True)
-        if not o3d.io.write_image(output_png, img):
-            raise IOError(f"无法写入图像至 {output_png}")
+        # 将 Open3D 图像转换为 numpy 数组
+        img_data = np.asarray(img)
+        # 转换为 PIL 图像对象
+        pil_img = Image.fromarray(img_data)
+        # 保存为 JPEG 格式
+        os.makedirs(os.path.dirname(output_jpg), exist_ok=True)
+        pil_img.save(output_jpg, format="JPEG", quality=90)
 
         scene.clear_geometry()
-        print(f"成功渲染并保存图像至 {output_png}")
+        print(f"成功渲染并保存图像至 {output_jpg}")
 
     def process(self):
         """
@@ -134,7 +138,6 @@ class PointCloudRenderer:
 
         # 对于每个相机方向，先固定计算摄像机位置和目标
         direction_to_camera = {}
-        # 使用第一个文件来初始化每个方向的摄像机位置和目标
         sample_pcd = self.load_point_cloud(file_list[0])
 
         for idx, direction in enumerate(directions):
@@ -145,10 +148,9 @@ class PointCloudRenderer:
             except Exception as e:
                 print(f"计算方向 {direction} 时发生错误：{e}")
 
-        # 针对每个文件和每个方向进行渲染，使用固定的摄像机位置和目标
+        # 针对每个文件和每个方向进行渲染
         for npy_file in file_list:
             base_filename = os.path.splitext(os.path.basename(npy_file))[0]
-            # 加载当前点云文件
             try:
                 pcd = self.load_point_cloud(npy_file)
             except Exception as e:
@@ -161,29 +163,27 @@ class PointCloudRenderer:
                     print(f"未找到方向 {direction} 对应的摄像机设置，跳过。")
                     continue
 
-                # 使用固定的摄像机位置和目标
                 self.camera_direction = direction
                 self.camera_location, self.camera_target = direction_to_camera[key]
 
-                # 构造输出文件名，包含视角序号
-                filename = f"{base_filename}_view{idx+1}.png"
-                output_png = os.path.join(task_output_folder, filename)
+                filename = f"{base_filename}_view{idx+1}.jpg"
+                output_jpg = os.path.join(task_output_folder, filename)
                 try:
-                    self.render_single(pcd, output_png)
+                    self.render_single(pcd, output_jpg)
                 except Exception as e:
                     print(f"渲染文件 {npy_file} 在方向 {direction} 时发生错误：{e}")
 
 if __name__ == "__main__":
+    import glob  # 确保glob被导入
     # ============== 配置参数 ==============
     input_path = "test/pointclouds/metaworld_soccer-v2"  # 或者指向文件夹或单个 .npy 文件
     output_folder = "test/renderPointCloud"
-    width = 800
-    height = 600
+    width = 400
+    height = 400
     camera_location = None    
     camera_target = None      
     camera_up = [0, 1, 0]
     
-    # 提供多个自定义方向列表
     camera_directions = [
         [1, -1, 1],
         [-1, -1, 1],
