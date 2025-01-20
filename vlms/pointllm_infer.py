@@ -378,8 +378,6 @@ def pointllm_query_2(query_list, summary_prompt, temperature=0.01):
 
 
 
-
-
 # 示例用法
 if __name__ == "__main__":
     from prompt import (

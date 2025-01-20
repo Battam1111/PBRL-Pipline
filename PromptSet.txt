@@ -1,0 +1,1892 @@
+Prompt 1
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Q1: Which aspects in Situation 1 are directly related to achieving the objective?
+Q2: Which aspects in Situation 2 are directly related to achieving the objective?
+Q3: Comparing both situations, is one more advantageous for fulfilling the objective, or are they equivalent?
+
+Finish with a one-line summary:
+- "0" if Situation 1 is better.
+- "1" if Situation 2 is better.
+- "-1" if no difference or uncertain.
+
+
+
+
+Prompt 2
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Step 1: Identify the most objective-relevant elements in Situation 1.
+Step 2: Identify the most objective-relevant elements in Situation 2.
+Step 3: Assess whether one situation offers a clear advantage or if they are essentially the same.
+
+Provide a single-line final answer:
+- “0” if Situation 1 prevails.
+- “1” if Situation 2 prevails.
+- “-1” if no clear preference.
+
+
+
+
+Prompt 3
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+1) List the prominent factors in Situation 1 that support or hinder the objective.
+2) List the prominent factors in Situation 2 that support or hinder the objective.
+3) Which situation is more favorable to the objective, or are they identical in effect?
+
+Conclude in one line:
+- "0" = Situation 1 is better
+- "1" = Situation 2 is better
+- "-1" = No difference or cannot decide
+
+
+
+
+Prompt 4
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Instructions:
+A) Summarize how Situation 1 aligns (or misaligns) with the objective.
+B) Summarize how Situation 2 aligns (or misaligns) with the objective.
+C) Compare both. Which is closer to meeting the objective, or is it indeterminate?
+
+Respond with only:
+- “0” if you favor Situation 1.
+- “1” if you favor Situation 2.
+- “-1” if they are equal or unsure.
+
+
+
+
+Prompt 5
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Question Set:
+1. In Situation 1, which features are pivotal for reaching the objective?
+2. In Situation 2, which features are pivotal for reaching the objective?
+3. Does one situation more effectively satisfy the objective, or is there no difference?
+
+Final output (single line):
+- “0”: Situation 1 is superior
+- “1”: Situation 2 is superior
+- “-1”: No difference or unclear
+
+
+
+
+Prompt 6
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+(1) Describe the core elements in Situation 1 that impact the objective.
+(2) Describe the core elements in Situation 2 that impact the objective.
+(3) Based on these elements, is one situation preferable or are they on par?
+
+Conclude with:
+- “0” if Situation 1 is better.
+- “1” if Situation 2 is better.
+- “-1” if there is no difference or it is inconclusive.
+
+
+
+
+Prompt 7
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+First: Identify the relevant details in Situation 1 that influence the objective's success.
+Second: Identify the relevant details in Situation 2 that influence the objective's success.
+Third: Evaluate which situation best fulfills the objective, or if both are equivalent.
+
+Provide a one-line verdict:
+- “0” if Situation 1 ranks higher.
+- “1” if Situation 2 ranks higher.
+- “-1” if they are indistinguishable or cannot be judged.
+
+
+
+
+Prompt 8
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Please clarify:
+A) In what way does Situation 1 help (or not help) to achieve the objective?
+B) In what way does Situation 2 help (or not help) to achieve the objective?
+C) Which situation offers a better chance to meet the objective, or are they basically the same?
+
+Final answer (in one line only):
+- “0” if Situation 1 is more suitable.
+- “1” if Situation 2 is more suitable.
+- “-1” if they are equal or uncertain.
+
+
+
+
+Prompt 9
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Key questions:
+• Which points in Situation 1 seem crucial to achieving the objective?
+• Which points in Situation 2 seem crucial to achieving the objective?
+• Do you see a clear advantage in one situation over the other?
+
+Reply with only:
+- “0” if Situation 1 is clearly better.
+- “1” if Situation 2 is clearly better.
+- “-1” if uncertain or no difference.
+
+
+
+
+Prompt 10
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+(1) Pinpoint the factors in Situation 1 that most directly affect the objective.
+(2) Pinpoint the factors in Situation 2 that most directly affect the objective.
+(3) Compare these factors to see which situation is more effective or if none stands out.
+
+Answer with one line:
+- "0" = Situation 1 leads
+- "1" = Situation 2 leads
+- "-1" = Indistinct or unknown
+
+
+
+
+Prompt 11
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Action plan:
+1) Extract the key elements in Situation 1 that align with the objective.
+2) Extract the key elements in Situation 2 that align with the objective.
+3) Determine whether one situation provides a clearer path to the objective.
+
+Your final response must be a single line:
+- “0” if Situation 1 is superior
+- “1” if Situation 2 is superior
+- “-1” if no clear verdict
+
+
+
+
+Prompt 12
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Steps:
+(1) Detail how Situation 1 might aid or impede the objective.
+(2) Detail how Situation 2 might aid or impede the objective.
+(3) Compare these details to see if there's a distinct advantage or they are identical.
+
+Single-line conclusion:
+- “0”: Choose Situation 1
+- “1”: Choose Situation 2
+- “-1”: No difference or not determinable
+
+
+
+
+Prompt 13
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Analyze:
+- Which aspects of Situation 1 stand out for fulfilling the objective?
+- Which aspects of Situation 2 stand out for fulfilling the objective?
+- Weigh them: does one situation surpass the other, or do they tie?
+
+Provide your result on one line:
+- “0” if Situation 1 is better.
+- “1” if Situation 2 is better.
+- “-1” if they seem equivalent or unclear.
+
+
+
+
+Prompt 14
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Please address:
+1) The primary advantages (or disadvantages) of Situation 1 in achieving the objective.
+2) The primary advantages (or disadvantages) of Situation 2 in achieving the objective.
+3) Which situation is more effective overall, or are they too similar to decide?
+
+Return only:
+- “0” if Situation 1 is best.
+- “1” if Situation 2 is best.
+- “-1” if no strong difference.
+
+
+
+
+Prompt 15
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Consider:
+1. Key factors in Situation 1 that shape how well the objective can be met.
+2. Key factors in Situation 2 that shape how well the objective can be met.
+3. Which situation appears to better satisfy the objective, or are they equal?
+
+Answer using a single line:
+- “0” for Situation 1
+- “1” for Situation 2
+- “-1” for no difference
+
+
+
+
+Prompt 16
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Guidance:
+(1) Describe the main points in Situation 1 relevant to the objective.
+(2) Describe the main points in Situation 2 relevant to the objective.
+(3) Decide if one situation holds a notable advantage or if they are alike.
+
+Conclude with:
+- “0” if Situation 1 is superior.
+- “1” if Situation 2 is superior.
+- “-1” if they're equal or uncertain.
+
+
+
+
+Prompt 17
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Tasks:
+A) Observe how Situation 1 interacts with the objective.
+B) Observe how Situation 2 interacts with the objective.
+C) Which scenario is more aligned with the objective, or is there no difference?
+
+Provide a single-line outcome:
+- "0": if Situation 1 is better
+- "1": if Situation 2 is better
+- "-1": if no difference or unclear
+
+
+
+
+Prompt 18
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+(1) List all significant elements in Situation 1 that could impact the objective.
+(2) List all significant elements in Situation 2 that could impact the objective.
+(3) On balance, which situation enhances achievement of the objective more, or is it impossible to decide?
+
+Output only:
+- "0" if Situation 1 excels
+- "1" if Situation 2 excels
+- "-1" if neither is distinct or it's unclear
+
+
+
+
+Prompt 19
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Instructions:
+1) Identify any direct connections between Situation 1 and the objective.
+2) Identify any direct connections between Situation 2 and the objective.
+3) Evaluate whether Situation 1, Situation 2, or neither provides a better path to success.
+
+Single line response:
+- “0” if 1 is better
+- “1” if 2 is better
+- “-1” if no difference
+
+
+
+
+Prompt 20
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Please evaluate:
+- The ways in which Situation 1 addresses or supports the objective.
+- The ways in which Situation 2 addresses or supports the objective.
+- Whether you can pick a clear winner for meeting the objective, or if it's a tie.
+
+End with:
+- “0” if Situation 1 is superior
+- “1” if Situation 2 is superior
+- “-1” if uncertain or equal
+
+
+
+
+Prompt 21
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Analyze these steps:
+(1) How does Situation 1 facilitate accomplishing the objective?
+(2) How does Situation 2 facilitate accomplishing the objective?
+(3) Which situation is more promising, or are they effectively the same?
+
+Conclude with exactly one line:
+- “0” if Situation 1 is preferable.
+- “1” if Situation 2 is preferable.
+- “-1” if they're indistinguishable or unclear.
+
+
+
+
+Prompt 22
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Your mission:
+a) Pinpoint the objective-relevant details in Situation 1.
+b) Pinpoint the objective-relevant details in Situation 2.
+c) Which scenario is more conducive to achieving the objective, or is there no difference?
+
+Provide only:
+- "0" if 1 is better
+- "1" if 2 is better
+- "-1" if no difference
+
+
+
+
+Prompt 23
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Points to cover:
+1) How does Situation 1 potentially improve or worsen outcomes for the objective?
+2) How does Situation 2 potentially improve or worsen outcomes for the objective?
+3) Does one situation stand out, or do they seem equal in helping achieve the objective?
+
+Final single-line verdict:
+- "0" = Prefer Situation 1
+- "1" = Prefer Situation 2
+- "-1" = No distinction
+
+
+
+
+Prompt 24
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Focus:
+I. Identify key opportunities or challenges in Situation 1 that affect the objective.
+II. Identify key opportunities or challenges in Situation 2 that affect the objective.
+III. Which situation has the upper hand in fulfilling the objective, if any?
+
+Short answer:
+- “0” if Situation 1 is best
+- “1” if Situation 2 is best
+- “-1” if no clear difference
+
+
+
+
+Prompt 25
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Try this approach:
+(1) List how Situation 1 helps address the objective or fails to.
+(2) List how Situation 2 helps address the objective or fails to.
+(3) Decide if there is a clear advantage or if both are the same.
+
+Return:
+- "0": if Situation 1 is the choice
+- "1": if Situation 2 is the choice
+- "-1": if neither is distinguishable
+
+
+
+
+Prompt 26
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Inspection:
+• Which elements in Situation 1 matter most for accomplishing the objective?
+• Which elements in Situation 2 matter most for accomplishing the objective?
+• Compare these elements to determine if one scenario is superior or if they are equal.
+
+End with a one-line output:
+- “0” if S1 wins
+- “1” if S2 wins
+- “-1” if no difference or uncertain
+
+
+
+
+Prompt 27
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Task outline:
+1) Examine how Situation 1 can contribute to or impede the objective.
+2) Examine how Situation 2 can contribute to or impede the objective.
+3) Decide whether one is clearly better or if both are on the same level.
+
+Respond in a single line:
+- "0" if Situation 1 is better
+- "1" if Situation 2 is better
+- "-1" if no clear difference
+
+
+
+
+Prompt 28
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Objective-based questions:
+A) Which indicators in Situation 1 are pivotal to success?
+B) Which indicators in Situation 2 are pivotal to success?
+C) Compare the likelihood of success—Is one scenario preferable or are they identical?
+
+Please finalize with:
+- “0” for Situation 1
+- “1” for Situation 2
+- “-1” for no difference/uncertainty
+
+
+
+
+Prompt 29
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Criteria:
+1) Detail the relevant traits of Situation 1 that influence meeting the objective.
+2) Detail the relevant traits of Situation 2 that influence meeting the objective.
+3) Judge whether one is superior, or if they're essentially the same.
+
+Single line outcome:
+- “0” if S1
+- “1” if S2
+- “-1” if no difference
+
+
+
+
+Prompt 30
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Key Steps:
+(1) Outline Situation 1's strengths or weaknesses regarding the objective.
+(2) Outline Situation 2's strengths or weaknesses regarding the objective.
+(3) Compare them directly to see which is more aligned with the objective or if there's no clear winner.
+
+Provide a single-line conclusion:
+- “0” if Situation 1 prevails
+- “1” if Situation 2 prevails
+- “-1” if no difference is found
+
+
+
+
+Prompt 31
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Protocol:
+1) Identify how Situation 1 might optimize or compromise the objective.
+2) Identify how Situation 2 might optimize or compromise the objective.
+3) Which scenario is more advantageous, or is it too close to call?
+
+Final answer, one line:
+- "0" if S1 stands out
+- "1" if S2 stands out
+- "-1" if inconclusive or equal
+
+
+
+
+Prompt 32
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Focus questions:
+• Which aspects of Situation 1 either support or conflict with the objective?
+• Which aspects of Situation 2 either support or conflict with the objective?
+• Does one scenario appear superior, or is there no significant difference?
+
+Return a one-line verdict:
+- “0” if S1 is better
+- “1” if S2 is better
+- “-1” if no difference
+
+
+
+
+Prompt 33
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Examination:
+(1) Which features in Situation 1 best align with achieving the objective?
+(2) Which features in Situation 2 best align with achieving the objective?
+(3) Contrast the two. Is one obviously better, or do they match?
+
+One-line final result:
+- “0” for Situation 1
+- “1” for Situation 2
+- “-1” for no difference
+
+
+
+
+Prompt 34
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Steps for analysis:
+A) Clarify how Situation 1 interacts with the objective's requirements.
+B) Clarify how Situation 2 interacts with the objective's requirements.
+C) Assess which situation is more conducive or if they are on par.
+
+Short, single-line reply:
+- "0": S1 is better
+- "1": S2 is better
+- "-1": No difference
+
+
+
+
+Prompt 35
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Guiding questions:
+1. In what ways does Situation 1 enable or hinder the objective?
+2. In what ways does Situation 2 enable or hinder the objective?
+3. Which situation offers a clearer path to success, or is there no distinction?
+
+Provide a one-line decision:
+- “0” if Situation 1 is favored
+- “1” if Situation 2 is favored
+- “-1” if uncertain or equal
+
+
+
+
+Prompt 36
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Consider:
+(1) What elements in Situation 1 drive or impede accomplishing the objective?
+(2) What elements in Situation 2 drive or impede accomplishing the objective?
+(3) Which scenario is more beneficial overall, or are they effectively the same?
+
+Final single-line:
+- “0” if S1 is better
+- “1” if S2 is better
+- “-1” if no difference
+
+
+
+
+Prompt 37
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Action items:
+(1) Analyze how Situation 1 fits the objective’s criteria.
+(2) Analyze how Situation 2 fits the objective’s criteria.
+(3) Decide whether one scenario is preferable for the objective, or if they are equal.
+
+End with:
+- “0” if you pick Situation 1
+- “1” if you pick Situation 2
+- “-1” if no preference
+
+
+
+
+Prompt 38
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+(1) Isolate the most crucial factors in Situation 1 related to the objective.
+(2) Isolate the most crucial factors in Situation 2 related to the objective.
+(3) Does one situation outshine the other, or is it a tie?
+
+Answer with one line:
+- "0": S1
+- "1": S2
+- "-1": No difference
+
+
+
+
+Prompt 39
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Compare:
+a) The degree to which Situation 1 supports the objective.
+b) The degree to which Situation 2 supports the objective.
+c) Conclude which situation seems more optimal, or if they're the same.
+
+Give only a single line:
+- “0” if S1 triumphs
+- “1” if S2 triumphs
+- “-1” if no difference
+
+
+
+
+Prompt 40
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Consideration steps:
+1) Highlight how Situation 1 contributes to or detracts from the objective.
+2) Highlight how Situation 2 contributes to or detracts from the objective.
+3) Which scenario is superior for the objective, or are they equally matched?
+
+Output a single line:
+- “0” for Situation 1
+- “1” for Situation 2
+- “-1” for no difference or unsure
+
+
+
+
+Prompt 41
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Please do the following:
+(1) Explain the ways Situation 1 fulfills the objective.
+(2) Explain the ways Situation 2 fulfills the objective.
+(3) Which fulfills it better, or are they the same?
+
+Give a one-line verdict:
+- “0” if S1 is best
+- “1” if S2 is best
+- “-1” if it's impossible to tell
+
+
+
+
+Prompt 42
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Key analysis:
+• Situation 1’s benefits and drawbacks for achieving the objective.
+• Situation 2’s benefits and drawbacks for achieving the objective.
+• Is one more favorable, or do they achieve the objective equally well?
+
+Respond with one line:
+- “0”: S1
+- “1”: S2
+- “-1”: Equal or uncertain
+
+
+
+
+Prompt 43
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Request:
+1) Evaluate how Situation 1 meets (or does not meet) the objective.
+2) Evaluate how Situation 2 meets (or does not meet) the objective.
+3) Conclude if one surpasses the other, or if they are on the same level.
+
+Single line only:
+- "0": Prefer S1
+- "1": Prefer S2
+- "-1": No significant difference
+
+
+
+
+Prompt 44
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Approach:
+A) Identify the central attributes of Situation 1 that affect the objective.
+B) Identify the central attributes of Situation 2 that affect the objective.
+C) Which situation is more efficient or are they equally effective?
+
+Answer briefly on one line:
+- "0" = Situation 1
+- "1" = Situation 2
+- "-1" = Indistinguishable
+
+
+
+
+Prompt 45
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Steps to follow:
+(1) How does Situation 1 align with the objective's demands?
+(2) How does Situation 2 align with the objective's demands?
+(3) Which alignment is stronger, or are they of equal merit?
+
+Final single-line:
+- “0” if S1 is superior
+- “1” if S2 is superior
+- “-1” if no difference
+
+
+
+
+Prompt 46
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Consider:
+• The relevance of Situation 1 to achieving the objective.
+• The relevance of Situation 2 to achieving the objective.
+• Does one scenario stand out, or do they match in efficacy?
+
+One-line decision:
+- “0” for S1
+- “1” for S2
+- “-1” for no difference
+
+
+
+
+Prompt 47
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Deep dive:
+1) Determine the crucial elements in Situation 1 that help realize the objective.
+2) Determine the crucial elements in Situation 2 that help realize the objective.
+3) Does one set of elements provide a stronger benefit, or is it indistinguishable?
+
+Return a single line:
+- “0” if S1 leads
+- “1” if S2 leads
+- “-1” if same or unclear
+
+
+
+
+Prompt 48
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Plan:
+I. Examine how Situation 1 might fulfill the objective's criteria.
+II. Examine how Situation 2 might fulfill the objective's criteria.
+III. Decide if one is better suited, or if they are equally suited.
+
+A single-line outcome only:
+- “0” if S1 is better
+- “1” if S2 is better
+- “-1” if no difference
+
+
+
+
+Prompt 49
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Tasks:
+(1) Outline the most significant factors in Situation 1 that influence the objective.
+(2) Outline the most significant factors in Situation 2 that influence the objective.
+(3) Compare the significance to see if one scenario is definitively better or they're equivalent.
+
+One-line answer:
+- "0": S1 is superior
+- "1": S2 is superior
+- "-1": No distinction
+
+
+
+
+Prompt 50
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+You must:
+• Gather the top reasons why Situation 1 might meet the objective.
+• Gather the top reasons why Situation 2 might meet the objective.
+• Decide which situation is more effective or if neither is distinguishable.
+
+Answer on one line:
+- “0” if you pick Situation 1
+- “1” if you pick Situation 2
+- “-1” if they cannot be differentiated
+
+
+
+
+Prompts 51–100  
+(50 new prompts, each preserving the same essential function—compare two situations for a given objective, then produce “0,” “1,” or “-1” in a single line.)
+
+
+
+Prompt 51
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+1) Examine how each situation impacts the objective.
+2) Discuss whether one situation offers a unique benefit.
+3) Conclude: which is better, or no difference?
+
+Final single-line output:
+- “0” if Situation 1 is better
+- “1” if Situation 2 is better
+- “-1” if there's no difference
+
+
+
+
+Prompt 52
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Task:
+A) Note how Situation 1 supports (or doesn't support) the objective.
+B) Note how Situation 2 supports (or doesn't support) the objective.
+C) Decide if one outperforms the other or if they are tied.
+
+Answer in one line only:
+- "0": S1 is preferred
+- "1": S2 is preferred
+- "-1": Indistinguishable
+
+
+
+
+Prompt 53
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Analyze carefully:
+(1) Identify relevant details of Situation 1 that boost or hinder the objective.
+(2) Identify relevant details of Situation 2 that boost or hinder the objective.
+(3) Is there a clear winner or are they effectively the same?
+
+Respond with:
+- "0" if Situation 1 stands out
+- "1" if Situation 2 stands out
+- "-1" if they can't be distinguished
+
+
+
+
+Prompt 54
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Assess:
+1) Which elements in Situation 1 directly correlate with achieving the objective?
+2) Which elements in Situation 2 directly correlate with achieving the objective?
+3) Any decisive advantage, or no difference?
+
+Use one line to finalize:
+- “0” = Prefer S1
+- “1” = Prefer S2
+- “-1” = No difference
+
+
+
+
+Prompt 55
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Objectives:
+- Examine the potential of Situation 1 in meeting the objective.
+- Examine the potential of Situation 2 in meeting the objective.
+- Determine if one excels or if they are the same.
+
+Final single line only:
+- "0": S1 is the best
+- "1": S2 is the best
+- "-1": No clear difference
+
+
+
+
+Prompt 56
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Instructions:
+(1) List the main factors by which Situation 1 could achieve or miss the objective.
+(2) List the main factors by which Situation 2 could achieve or miss the objective.
+(3) Compare them. Is one favored, or do they tie?
+
+One-line answer:
+- “0”: S1
+- “1”: S2
+- “-1”: Equal or unclear
+
+
+
+
+Prompt 57
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Important questions:
+1) Which attributes of Situation 1 best serve the objective?
+2) Which attributes of Situation 2 best serve the objective?
+3) Which scenario appears more compatible with success?
+
+Conclude with:
+- “0” if Situation 1
+- “1” if Situation 2
+- “-1” if uncertain
+
+
+
+
+Prompt 58
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Please respond:
+(a) Summarize how Situation 1 aligns with the objective.
+(b) Summarize how Situation 2 aligns with the objective.
+(c) Which alignment is stronger, or are they equal?
+
+One-line result:
+- "0" if S1 is stronger
+- "1" if S2 is stronger
+- "-1" if no clear difference
+
+
+
+
+Prompt 59
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Focus on:
+1) What aspects of Situation 1 significantly influence the objective?
+2) What aspects of Situation 2 significantly influence the objective?
+3) Which situation has a more evident advantage, or do they match?
+
+One-line conclusion:
+- “0” = S1 is better
+- “1” = S2 is better
+- “-1” = No difference
+
+
+
+
+Prompt 60
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Analyze thoroughly:
+(1) Identify how Situation 1 meets or fails the objective requirements.
+(2) Identify how Situation 2 meets or fails the objective requirements.
+(3) Which scenario is stronger, or are they the same?
+
+Reply in one line only:
+- “0” if S1 prevails
+- “1” if S2 prevails
+- “-1” if none stands out
+
+
+
+
+Prompt 61
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Consider these steps:
+1) Evaluate the key ways Situation 1 influences the objective.
+2) Evaluate the key ways Situation 2 influences the objective.
+3) Is one solution superior, or do they perform equally well?
+
+Answer succinctly, one line:
+- "0": S1 is better
+- "1": S2 is better
+- "-1": No difference
+
+
+
+
+Prompt 62
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Breakdown:
+A) How Situation 1 addresses the objective.
+B) How Situation 2 addresses the objective.
+C) Which approach is better, or is it a tie?
+
+One-line final:
+- “0” if S1 is superior
+- “1” if S2 is superior
+- “-1” if it's a tie
+
+
+
+
+Prompt 63
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Steps:
+(1) Indicate the relevant information in Situation 1 that contributes to the objective.
+(2) Indicate the relevant information in Situation 2 that contributes to the objective.
+(3) Is there a clear winner for fulfilling the objective, or is it uncertain?
+
+One-line verdict:
+- "0": S1
+- "1": S2
+- "-1": Cannot decide
+
+
+
+
+Prompt 64
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Instruction:
+1) Highlight advantages of Situation 1 relative to the objective.
+2) Highlight advantages of Situation 2 relative to the objective.
+3) If there's a definitive edge, which is it? Or no difference?
+
+Reply with just:
+- “0” if S1
+- “1” if S2
+- “-1” if equal
+
+
+
+
+Prompt 65
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Focus your analysis:
+• Which pieces of evidence in Situation 1 best satisfy the objective?
+• Which pieces of evidence in Situation 2 best satisfy the objective?
+• Any notable difference in efficacy, or are they the same?
+
+Single-line final:
+- “0” for S1
+- “1” for S2
+- “-1” for no difference
+
+
+
+
+Prompt 66
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Look at:
+(1) How thoroughly Situation 1 meets the objective.
+(2) How thoroughly Situation 2 meets the objective.
+(3) Compare the two. Who has the advantage, or is there none?
+
+Answer with one line:
+- "0" = S1
+- "1" = S2
+- "-1" = Equal or unknown
+
+
+
+
+Prompt 67
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Analyze:
+1) Which distinctive traits of Situation 1 fulfill the objective?
+2) Which distinctive traits of Situation 2 fulfill the objective?
+3) Do these traits favor one scenario more?
+
+Final single line:
+- “0” if Situation 1 is top
+- “1” if Situation 2 is top
+- “-1” if they are tied
+
+
+
+
+Prompt 68
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Quick check:
+A) Summarize any direct benefits Situation 1 provides toward the objective.
+B) Summarize any direct benefits Situation 2 provides toward the objective.
+C) Who wins overall, or is it too close to call?
+
+One line only:
+- "0" if S1
+- "1" if S2
+- "-1" if no difference
+
+
+
+
+Prompt 69
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Evaluation:
+(1) Note the practical ways in which Situation 1 addresses the objective.
+(2) Note the practical ways in which Situation 2 addresses the objective.
+(3) Is one approach clearly stronger, or are they alike?
+
+Conclude on one line:
+- “0”: S1 better
+- “1”: S2 better
+- “-1”: No difference
+
+
+
+
+Prompt 70
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Review:
+1) Which aspects of Situation 1 are critical for success?
+2) Which aspects of Situation 2 are critical for success?
+3) Select the better situation, or none.
+
+Final single line:
+- "0" = S1
+- "1" = S2
+- "-1" = Not different
+
+
+
+
+Prompt 71
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Please outline:
+- The specific ways Situation 1 supports (or fails) the objective.
+- The specific ways Situation 2 supports (or fails) the objective.
+- Which scenario has the advantage, if any?
+
+One-line answer:
+- “0” = Situation 1
+- “1” = Situation 2
+- “-1” = No difference
+
+
+
+
+Prompt 72
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Guidelines:
+(1) Identify how effectively Situation 1 addresses the objective’s core requirements.
+(2) Identify how effectively Situation 2 addresses the objective’s core requirements.
+(3) Conclude which one is better or if they’re equal.
+
+Single line only:
+- "0" if S1 outperforms
+- "1" if S2 outperforms
+- "-1" if no difference
+
+
+
+
+Prompt 73
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Goal:
+• Detail the meaningful connections between Situation 1 and the objective.
+• Detail the meaningful connections between Situation 2 and the objective.
+• Any advantage for one situation over the other, or none?
+
+Final one-line:
+- "0": Prefer S1
+- "1": Prefer S2
+- "-1": Equal
+
+
+
+
+Prompt 74
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Step-by-step:
+A) Determine relevant strengths of Situation 1.
+B) Determine relevant strengths of Situation 2.
+C) Decide which scenario is stronger, or if they are tied.
+
+Single-line response:
+- “0” if S1
+- “1” if S2
+- “-1” if no difference
+
+
+
+
+Prompt 75
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Inquiry:
+(1) Identify the most positive and negative aspects of Situation 1 in relation to the objective.
+(2) Identify the most positive and negative aspects of Situation 2 in relation to the objective.
+(3) Is one scenario better for meeting the objective, or not?
+
+Single-line final:
+- "0" = S1
+- "1" = S2
+- "-1" = Indistinguishable
+
+
+
+
+Prompt 76
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Compare & contrast:
+1) How does Situation 1 tackle the core requirements of the objective?
+2) How does Situation 2 tackle the core requirements of the objective?
+3) Which one is more likely to succeed?
+
+One line:
+- “0”: S1 is superior
+- “1”: S2 is superior
+- “-1”: No difference
+
+
+
+
+Prompt 77
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Focus areas:
+(1) Extract the key enablers for the objective in Situation 1.
+(2) Extract the key enablers for the objective in Situation 2.
+(3) Who benefits more, or is it equivalent?
+
+Return just:
+- "0" if S1 is better
+- "1" if S2 is better
+- "-1" if uncertain
+
+
+
+
+Prompt 78
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Simple check:
+• Does Situation 1 fulfill the objective more effectively than Situation 2?
+• Or does Situation 2 offer a greater advantage?
+• Or are both situations nearly the same?
+
+One-line decision:
+- “0” = Prefer S1
+- “1” = Prefer S2
+- “-1” = Same
+
+
+
+
+Prompt 79
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Clarify:
+1) The biggest contributors in Situation 1 to the objective's achievement.
+2) The biggest contributors in Situation 2 to the objective's achievement.
+3) Any reason to prefer one situation or not?
+
+Answer in one line:
+- "0": S1
+- "1": S2
+- "-1": Equal or unsure
+
+
+
+
+Prompt 80
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Evaluation steps:
+(1) Examine how well Situation 1 tackles the objective.
+(2) Examine how well Situation 2 tackles the objective.
+(3) Is there a standout or a tie?
+
+One-line output:
+- “0” if S1 is superior
+- “1” if S2 is superior
+- “-1” if no difference
+
+
+
+
+Prompt 81
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Directions:
+A) Determine any direct conflict or synergy between Situation 1 and the objective.
+B) Determine any direct conflict or synergy between Situation 2 and the objective.
+C) Does one synergy stand above the other, or are they the same?
+
+One-line only:
+- "0": S1
+- "1": S2
+- "-1": No difference
+
+
+
+
+Prompt 82
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Detailed look:
+1) Outline the best-case outcome for the objective under Situation 1.
+2) Outline the best-case outcome for the objective under Situation 2.
+3) Which scenario is better, if any?
+
+Conclude succinctly:
+- “0” S1
+- “1” S2
+- “-1” No difference
+
+
+
+
+Prompt 83
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Focus:
+(1) What does Situation 1 directly do to meet the objective?
+(2) What does Situation 2 directly do to meet the objective?
+(3) Any decisive gap between them or are they effectively equal?
+
+Provide one line:
+- "0": S1
+- "1": S2
+- "-1": Indistinguishable
+
+
+
+
+Prompt 84
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Goal check:
+• Identify the alignment of Situation 1 with the objective.
+• Identify the alignment of Situation 2 with the objective.
+• Is one alignment stronger, or are they on par?
+
+Output in one line:
+- “0” = S1
+- “1” = S2
+- “-1” = Equal
+
+
+
+
+Prompt 85
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Main questions:
+1) How does Situation 1 specifically address the objective?
+2) How does Situation 2 specifically address the objective?
+3) Does one scenario excel more than the other?
+
+One-line verdict:
+- "0" if S1 excels
+- "1" if S2 excels
+- "-1" if they match
+
+
+
+
+Prompt 86
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Instructions:
+A) Note the potential pros and cons of Situation 1 regarding the objective.
+B) Note the potential pros and cons of Situation 2 regarding the objective.
+C) Make a direct comparison.
+
+Answer on one line:
+- “0”: S1 advantage
+- “1”: S2 advantage
+- “-1”: No difference
+
+
+
+
+Prompt 87
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Key considerations:
+(1) What does Situation 1 contribute to the objective's success?
+(2) What does Situation 2 contribute to the objective's success?
+(3) Is one contribution better, or are they the same?
+
+One-line final:
+- "0" for S1
+- "1" for S2
+- "-1" for no difference
+
+
+
+
+Prompt 88
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Process:
+1) Break down how Situation 1 could achieve the objective.
+2) Break down how Situation 2 could achieve the objective.
+3) Which path is preferable, or is there no distinction?
+
+Return only:
+- “0” S1
+- “1” S2
+- “-1” No difference
+
+
+
+
+Prompt 89
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Examination:
+A) Identify the primary ways Situation 1 aims toward the objective.
+B) Identify the primary ways Situation 2 aims toward the objective.
+C) If there's an advantage, which is it?
+
+Single line:
+- "0" if S1
+- "1" if S2
+- "-1" if no difference
+
+
+
+
+Prompt 90
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Focus:
+(1) In what manner does Situation 1 meet or exceed the objective?
+(2) In what manner does Situation 2 meet or exceed the objective?
+(3) Which manner is more effective, or are they identical?
+
+Give one line:
+- “0” = S1
+- “1” = S2
+- “-1” = Indistinguishable
+
+
+
+
+Prompt 91
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Prompt:
+1) Detail the major success factors for the objective in Situation 1.
+2) Detail the major success factors for the objective in Situation 2.
+3) Compare their ability to meet the objective.
+
+Answer in one line:
+- "0": S1
+- "1": S2
+- "-1": No difference
+
+
+
+
+Prompt 92
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Assessment:
+(1) How Situation 1 connects to the objective.
+(2) How Situation 2 connects to the objective.
+(3) Which connection is stronger?
+
+Single-line result:
+- “0” for S1
+- “1” for S2
+- “-1” if they tie
+
+
+
+
+Prompt 93
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Evaluate:
+• The immediate impact of Situation 1 on the objective.
+• The immediate impact of Situation 2 on the objective.
+• Which yields a better outcome, or are they the same?
+
+One-line conclusion:
+- "0": S1 superior
+- "1": S2 superior
+- "-1": Equal or uncertain
+
+
+
+
+Prompt 94
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Guide:
+1) Clarify how Situation 1 might fulfill the objective criteria.
+2) Clarify how Situation 2 might fulfill the objective criteria.
+3) Is there an evident edge for one scenario?
+
+Final single line:
+- "0" = S1
+- "1" = S2
+- "-1" = No difference
+
+
+
+
+Prompt 95
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Questions to answer:
+(1) Which features of Situation 1 directly aid in achieving the objective?
+(2) Which features of Situation 2 directly aid in achieving the objective?
+(3) Does one set of features outweigh the other?
+
+One-line output:
+- “0” S1 is better
+- “1” S2 is better
+- “-1” No difference
+
+
+
+
+Prompt 96
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Thought process:
+A) Explore how effectively Situation 1 aims at the objective.
+B) Explore how effectively Situation 2 aims at the objective.
+C) Are they similar or is one more capable?
+
+Answer only with:
+- "0" if S1
+- "1" if S2
+- "-1" if equal
+
+
+
+
+Prompt 97
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Steps to review:
+1) Identify the direct correlation between Situation 1 and the objective.
+2) Identify the direct correlation between Situation 2 and the objective.
+3) Which correlation is stronger, or are they the same?
+
+Return one line:
+- “0” if S1 leads
+- “1” if S2 leads
+- “-1” if no difference
+
+
+
+
+Prompt 98
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Comparison:
+(1) Evaluate the extent to which Situation 1 addresses the objective.
+(2) Evaluate the extent to which Situation 2 addresses the objective.
+(3) If one addresses it more thoroughly, which is it? Otherwise, no difference.
+
+One-line verdict:
+- "0" for S1
+- "1" for S2
+- "-1" for no difference
+
+
+
+
+Prompt 99
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Scrutinize:
+• Whether Situation 1 has a direct edge for achieving the objective.
+• Whether Situation 2 has a direct edge for achieving the objective.
+• If there's no edge, finalize as no difference.
+
+Final single line:
+- "0": S1
+- "1": S2
+- "-1": Equal
+
+
+
+
+Prompt 100
+
+Situation 1: {pc1}
+Situation 2: {pc2}
+Objective: {objective}
+
+Final approach:
+1) Examine how each situation explicitly meets the objective's needs.
+2) See if there's a notable performance gap or they're the same.
+3) Select the better scenario or indicate a tie.
+
+Single-line result:
+- “0” if Situation 1 is better
+- “1” if Situation 2 is better
+- “-1” if no difference

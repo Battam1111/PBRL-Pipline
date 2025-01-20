@@ -102,8 +102,8 @@ class Workspace(object):
         self.pointcloud_saver = PointCloudSaver(
             task=cfg.env,
             output_dir="/home/star/Yanjun/RL-VLM-F/data/pointclouds",
+            second_output_dir="/home/star/Yanjun/RL-VLM-F/data/DensePointClouds",
         )
-
 
         # 初始化回放缓冲区
         # 如果是 pointllm_two_image，就需要同时存储图像和点云
@@ -587,7 +587,7 @@ class Workspace(object):
             # 添加奖励训练数据
             if self.reward in ['learn_from_preference', 'learn_from_score']:
                 # 传递点云&图像数据
-                self.reward_model.add_data(obs, action, reward, done, img=render_image , point_cloud=point_cloud)
+                self.reward_model.add_data(obs, action, reward, done, img=render_image , point_cloud=point_cloud[0])
 
             # ===== 将数据添加到回放缓冲区，图像 & 点云都存 =====
             if self.cfg.image_reward and (self.reward not in ["gt_task_reward", "sparse_task_reward"]):
@@ -595,14 +595,14 @@ class Workspace(object):
                 self.replay_buffer.add(
                     obs, action, reward_hat, next_obs, done, done_no_max,
                     image=render_image[::self.resize_factor, ::self.resize_factor, :] if render_image is not None else None,
-                    point_cloud=point_cloud,  # 如果不是 pointllm_two_image，会是 None
+                    point_cloud=point_cloud[0],  # 如果不是 pointllm_two_image，会是 None
                 )
             else:
                 # 不走图像奖励时，依旧可能要存点云
                 self.replay_buffer.add(
                     obs, action, reward_hat, next_obs, done, done_no_max,
                     image=None,
-                    point_cloud=point_cloud
+                    point_cloud=point_cloud[0]
                 )
 
             obs = next_obs
@@ -626,12 +626,12 @@ def main(cfg):
     # 手动设置参数
     
     # 设置环境名称
-    # cfg.env = 'metaworld_soccer-v2'  # 使用元世界足球环境
+    cfg.env = 'metaworld_soccer-v2'  # 使用元世界足球环境
     # cfg.env = 'metaworld_drawer-open-v2' # 使用元世界抽屉打开环境
     # cfg.env = 'metaworld_door-open-v2'  # 使用元世界开门环境
     # cfg.env = 'metaworld_peg-insert-side-v2' # 使用元世界插销环境
     # cfg.env = 'metaworld_disassemble-v2' # 使用元世界拆卸环境
-    cfg.env = 'metaworld_handle-pull-side-v2' # 使用元世界拉手环境
+    # cfg.env = 'metaworld_handle-pull-side-v2' # 使用元世界拉手环境
 
     # cfg.env = 'metaworld_hand-insert-v2' # 使用元世界手插入环境（有问题）
     # cfg.env = 'metaworld_sweep-into-v2' # 使用元世界扫描环境（有问题）

@@ -7,7 +7,10 @@ class ScenePointCloudExtractor:
     """
     从 MuJoCo 模型和数据中提取场景的完整点云，包括 xyz 坐标和 rgba(可保留 alpha 也可截断)。
     同时支持对 mesh 进行表面采样，以获取稠密点云（如球门网等）。
-    新增：分配点数时不再随意截断，确保所有几何体均衡分配、总点数完全等于设定值。
+    新增功能：
+    - 分配点数时不再随意截断，确保所有几何体均衡分配、总点数完全等于设定值。
+    - 扩展 extract_point_cloud 方法，返回一个列表，其中第一个元素为指定点数的点云数组，
+      第二个元素为不限制点数的完整点云数组（采样尽可能多的点）。
     """
 
     def __init__(self, model, data,
@@ -26,6 +29,8 @@ class ScenePointCloudExtractor:
         self.data = data
         self.task_related_body_names = task_related_body_names if task_related_body_names else []
         self.num_points = num_points
+        # 用于无限制点云的密集采样因子，可以根据需要调整
+        self.dense_factor = 100  
         if random_seed is not None:
             np.random.seed(random_seed)
 
@@ -42,33 +47,68 @@ class ScenePointCloudExtractor:
 
     def extract_point_cloud(self):
         """
-        提取场景的完整点云数据 (N, 6)，其中:
-            前3列为 xyz，
-            后3列为 rgb。
-        若想保留 alpha，可自行把下面最后的 "[:, :6]" 去掉，或者改成 (N, 7)。
+        提取场景的完整点云数据，返回一个长度为2的列表：
+            第一个元素为 (N, 6) 的点云数组，其中 N == self.num_points，
+            第二个元素为不限制点数的完整点云数组，尽可能多地采样点。
+        每个数组的前3列为 xyz 坐标，后3列为 rgb 颜色。
+        若想保留 alpha，可自行修改代码以包括第7列。
         """
-        # 1. 获取任务相关的几何体 ID
+        # 获取任务相关的几何体 ID
         task_related_geom_ids = self._get_task_related_geom_ids()
         if not task_related_geom_ids:
-            print("[WARN] No task-related geoms found. Return empty array.")
-            return np.empty((0, 6))
+            print("[WARN] No task-related geoms found. Return empty arrays.")
+            empty_array = np.empty((0, 6))
+            return [empty_array, empty_array]
 
-        # 2. 计算每个 geom 的表面积（或代表面积），并做分配
+        # 计算每个 geom 的表面积（或代表面积），并做分配
         geom_areas = []
         for geom_id in task_related_geom_ids:
             area = self._compute_geom_area(geom_id)
             geom_areas.append((geom_id, area))
 
-        # 3. 根据面积分配点数：让总和恰好为 self.num_points
-        #    返回数组 allocated_pts_list，长度与 task_related_geom_ids 一致
+        # 针对指定点数的点云分配点数
         allocated_pts_list = self._allocate_points(geom_areas, self.num_points)
 
-        # 4. 对每个 geom 执行采样，拼接
+        # 针对不限制点数的点云，使用密集采样因子扩大采样点数
+        dense_total_points = int(self.num_points * self.dense_factor)
+        allocated_pts_list_dense = self._allocate_points(geom_areas, dense_total_points)
+
+        # 分别采样两个点云数组
+        limited_points, limited_colors = self._sample_point_clouds(geom_areas, allocated_pts_list)
+        dense_points,   dense_colors   = self._sample_point_clouds(geom_areas, allocated_pts_list_dense)
+
+        # 合并并处理第一个点云数组
+        if len(limited_points) == 0:
+            print("[WARN] No points sampled for limited point cloud. Return empty array.")
+            limited_point_cloud = np.empty((0, 6))
+        else:
+            limited_all_points = np.vstack(limited_points)    # (M1, 3)
+            limited_all_colors = np.vstack(limited_colors)    # (M1, 4)
+            limited_point_cloud = np.hstack((limited_all_points, limited_all_colors))[:, :6]  # (M1,6)
+
+        # 合并并处理密集点云数组
+        if len(dense_points) == 0:
+            print("[WARN] No points sampled for dense point cloud. Return empty array.")
+            dense_point_cloud = np.empty((0, 6))
+        else:
+            dense_all_points = np.vstack(dense_points)    # (M2, 3)
+            dense_all_colors = np.vstack(dense_colors)    # (M2, 4)
+            dense_point_cloud = np.hstack((dense_all_points, dense_all_colors))[:, :6]  # (M2,6)
+
+        # 返回包含两个点云数组的列表
+        return [limited_point_cloud, dense_point_cloud]
+
+    def _sample_point_clouds(self, geom_areas, allocated_pts_list):
+        """
+        根据分配的点数列表，对每个 geom 执行采样，并分别收集点和颜色。
+        返回两个列表：all_points 和 all_colors，其中每个元素对应一个 geom 的采样点和颜色数组。
+        """
         all_points = []
         all_colors = []
+        # 使用 zip 来遍历 geom_areas 和对应的分配点数
         for (geom_id, _), this_geom_num_pts in zip(geom_areas, allocated_pts_list):
             if this_geom_num_pts <= 0:
-                # 理论上不会出现(都保证>=1)，但以防万一
+                # 如果该几何体分配的点数为0，则跳过采样
                 continue
 
             geom_type = self.model.geom_type[geom_id]
@@ -77,7 +117,7 @@ class ScenePointCloudExtractor:
             geom_size = self.model.geom_size[geom_id]
             geom_rgba = self._get_geom_rgba(geom_id)
 
-            # 根据类型采样
+            # 根据不同的几何体类型进行相应的采样
             try:
                 if geom_type == mujoco.mjtGeom.mjGEOM_BOX:
                     vertices_local = self._sample_points_on_box(geom_size, this_geom_num_pts)
@@ -98,125 +138,44 @@ class ScenePointCloudExtractor:
                 print(f"[WARN] Error processing geom_id {geom_id}: {e}")
                 continue
 
-            # transform到全局坐标
+            # 将局部坐标转换为全局坐标
             vertices_global = vertices_local @ geom_xmat.T + geom_pos
 
-            # 颜色
+            # 生成颜色数组，与采样点数量匹配
             colors = np.tile(geom_rgba, (vertices_global.shape[0], 1))  # shape=(N,4)
 
             all_points.append(vertices_global)
             all_colors.append(colors)
 
-        # 5. 合并为 (N,7)
-        if len(all_points) == 0:
-            print("[WARN] No points sampled. Return empty array.")
-            return np.empty((0, 6))
-
-        all_points = np.vstack(all_points)    # (M, 3)
-        all_colors = np.vstack(all_colors)    # (M, 4)
-        point_cloud = np.hstack((all_points, all_colors))  # (M, 7)
-
-        # ★ 因为我们用分配算法严格控制了采样数之和= self.num_points
-        #   所以 M 应该 == self.num_points
-        #   不需要再做随机截断或补充
-
-        # 最终我们只返回 (N,6)，丢弃 alpha 列
-        point_cloud = point_cloud[:, :6]
-
-        return point_cloud
-
-    # ========================= 新增的核心函数 =========================
-    # def _allocate_points(self, geom_areas, total_points):
-    #     """
-    #     根据每个 geom 的 area，精准地给它们分配点数，使得分配后总数 == total_points。
-    #     并且保证每个 geom 至少分配到 1 个点。
-
-    #     geom_areas: List[(geom_id, area)]
-    #     total_points: int
-
-    #     返回：一个与 geom_areas 等长的数组 allocated_pts_list
-    #           其中 allocated_pts_list[i] 表示 geom_areas[i] 分配到的点数。
-    #     """
-    #     num_geoms = len(geom_areas)
-    #     if total_points < num_geoms:
-    #         raise ValueError(f"总点数 {total_points} 小于几何体数量 {num_geoms}，无法保证每个geom至少1点！")
-
-    #     # 1) 先给每个geom 1个点
-    #     min_alloc = np.ones(num_geoms, dtype=int)
-    #     sum_min_alloc = num_geoms
-
-    #     # 2) 计算可供二次分配的 leftover
-    #     leftover = total_points - sum_min_alloc
-    #     if leftover <= 0:
-    #         # 说明刚好或不足以再分配，直接返回
-    #         return min_alloc
-
-    #     # 3) 计算各geom在 leftover 中的分配比例
-    #     total_area = sum(area for _, area in geom_areas)
-    #     if total_area < 1e-12:
-    #         # 如果所有面积都几乎0，平分 leftover
-    #         # 这里简单处理：把 leftover 均匀摊给前 leftover个geom
-    #         # 或者干脆分配 0(若 leftover=0)。
-    #         # 为了更公平，可以都分到1，但是那可能导致超量。
-    #         # 这里做个平分：
-    #         base_portion = leftover // num_geoms
-    #         remainder = leftover % num_geoms
-    #         min_alloc += base_portion
-    #         # 再给 remainder个 geom +1
-    #         idxs = np.arange(num_geoms)
-    #         np.random.shuffle(idxs)
-    #         chosen = idxs[:remainder]
-    #         min_alloc[chosen] += 1
-    #         return min_alloc
-
-    #     # 4) 计算 floatAlloc = frac_i * leftover
-    #     frac = [area / total_area for _, area in geom_areas]
-    #     floatAlloc = np.array([f * leftover for f in frac], dtype=float)
-    #     floorAlloc = np.floor(floatAlloc).astype(int)
-
-    #     sum_floor = floorAlloc.sum()
-    #     leftover2 = leftover - sum_floor  # >= 0
-    #     remainders = floatAlloc - floorAlloc  # 范围 [0,1)
-
-    #     # 5) 按 remainder 从大到小排序，给 top leftover2 个 +1
-    #     #    这样 sum(alloc) = leftover
-    #     if leftover2 > 0:
-    #         sorted_indices = np.argsort(-remainders)  # 降序
-    #         top_indices = sorted_indices[:leftover2]
-    #         floorAlloc[top_indices] += 1
-
-    #     # 6) 最终 = min_alloc + floorAlloc
-    #     final_alloc = min_alloc + floorAlloc
-    #     assert final_alloc.sum() == total_points, \
-    #         f"分配总和{final_alloc.sum()} != {total_points}，请排查！"
-
-    #     return final_alloc
+        return all_points, all_colors
 
     def _allocate_points(self, geom_areas, total_points):
         """
         根据每个 geom 的面积和类型，精准地给它们分配点数，使得分配后总数 == total_points。
         同时，确保每个 geom 至少分配到一个合理的最低点数。
 
-        geom_areas: List[(geom_id, area)]
-        total_points: int
-        返回：一个与 geom_areas 等长的数组 allocated_pts_list
+        参数：
+            geom_areas: List[(geom_id, area)] 每个几何体及其表面积的列表
+            total_points: int 总共需要分配的点数
+
+        返回：
+            一个与 geom_areas 长度相同的 numpy 数组 allocated_pts_list，
+            其中每个元素表示对应几何体分配到的点数。
         """
         num_geoms = len(geom_areas)
 
-        # 1) 设置每个物体的最小点数（基于几何体类型调整）
+        # 1) 设置每个物体的最小点数（基于几何体类型调整，此处统一设定为至少1%或300个点）
         min_points_per_geom = np.array([
-            max(300, int(0.01 * total_points))  # 每个物体至少分配 1% 的点数或至少 10 个点
-            for _ in range(num_geoms)
+            max(300, int(0.01 * total_points))  for _ in range(num_geoms)
         ])
 
-        # 2) 计算剩余的点数
+        # 2) 计算剩余的可分配点数
         leftover_points = total_points - np.sum(min_points_per_geom)
 
         # 3) 按面积比例分配剩余点数
         total_area = sum(area for _, area in geom_areas)
         proportional_points = [
-            int(leftover_points * (area / total_area))
-            for _, area in geom_areas
+            int(leftover_points * (area / total_area))  for _, area in geom_areas
         ]
 
         # 4) 确保最终点数总和与 total_points 一致
@@ -229,6 +188,13 @@ class ScenePointCloudExtractor:
         """
         调整分配的点数，使总和恰好等于 total_points。
         如果超出或不足，则随机选择一些几何体增减点数。
+
+        参数：
+            allocated_points: numpy 数组，初步分配的点数列表
+            total_points: int 目标总点数
+
+        返回：
+            调整后的 numpy 数组，使其元素总和等于 total_points
         """
         current_total = np.sum(allocated_points)
         difference = total_points - current_total
@@ -236,6 +202,7 @@ class ScenePointCloudExtractor:
         if difference == 0:
             return allocated_points
 
+        # 随机选择若干几何体进行调整
         adjustment_indices = np.random.choice(
             range(len(allocated_points)),
             size=abs(difference),
@@ -247,21 +214,20 @@ class ScenePointCloudExtractor:
 
         return allocated_points
 
-
     # ============= 获取最终 RGBA =============
     def _get_geom_rgba(self, geom_id):
         """
         考虑 geom_rgba 与 material (emission, reflectance, specular, shininess) 做一次近似融合。
-        返回 (4,) => [r,g,b,a].
+        返回 (4,) => [r,g,b,a]，颜色值范围在 [0,1] 之间。
         """
         geom_rgba = np.clip(self.model.geom_rgba[geom_id], 0, 1)
 
         material_id = self.model.geom_matid[geom_id]
         if material_id < 0:
-            # 没有材质
+            # 没有材质则直接返回几何体颜色
             return geom_rgba
 
-        # 读取材质
+        # 读取材质属性
         material_rgba = np.clip(self.model.mat_rgba[material_id], 0, 1)
         shininess    = self.model.mat_shininess[material_id]
         reflectance  = self.model.mat_reflectance[material_id]
@@ -272,25 +238,25 @@ class ScenePointCloudExtractor:
         alpha_mat  = material_rgba[3]
         final_alpha = alpha_geom * alpha_mat
 
-        # 基础色
+        # 基础色彩计算
         base_rgb = geom_rgba[:3] * material_rgba[:3]
 
-        # emission => 自发光
+        # 考虑自发光的影响
         if emission > 1e-9:
             base_rgb += emission * np.array([1,1,1])
             base_rgb = np.clip(base_rgb, 0, 1)
 
-        # reflectance => 往白靠
+        # 考虑反射率影响，使颜色向白色靠拢
         if reflectance > 1e-9:
             base_rgb = (1 - reflectance)*base_rgb + reflectance*np.array([1,1,1])
             base_rgb = np.clip(base_rgb, 0, 1)
 
-        # specular => 进一步加白
+        # 考虑高光影响，进一步增加白色成分
         if specular > 1e-9:
             base_rgb += specular*np.array([1,1,1])
             base_rgb = np.clip(base_rgb, 0, 1)
 
-        # shininess => 再做微调(非常简化)
+        # 考虑光滑度对颜色的微调（非常简化处理）
         if shininess > 1e-9:
             base_rgb = base_rgb*(1 - 0.5*shininess) + 0.5*shininess*np.array([1,1,1])
             base_rgb = np.clip(base_rgb, 0, 1)
@@ -301,6 +267,7 @@ class ScenePointCloudExtractor:
     def _get_task_related_geom_ids(self):
         """
         获取任务相关的几何体索引，支持 body 及其子孙 body 的所有 geom。
+        遍历每个指定的 body 名称，收集其及其所有子孙 body 关联的几何体 ID。
         """
         task_related_geom_ids = []
         for body_name in self.task_related_body_names:
@@ -313,11 +280,19 @@ class ScenePointCloudExtractor:
             geom_ids = self._collect_geom_ids(body_id)
             task_related_geom_ids.extend(geom_ids)
 
-        # 去重
+        # 去重，避免重复采样同一个几何体
         return list(set(task_related_geom_ids))
 
     def _collect_geom_ids(self, body_id):
-        """递归收集指定 body 及其子孙 body 的 geom ID。"""
+        """
+        递归收集指定 body 及其子孙 body 的 geom ID。
+
+        参数：
+            body_id: int 指定 body 的 ID
+
+        返回：
+            geom_ids: list 收集到的几何体 ID 列表
+        """
         geom_ids = []
         geom_start = self.model.body_geomadr[body_id]
         geom_num = self.model.body_geomnum[body_id]
@@ -331,7 +306,10 @@ class ScenePointCloudExtractor:
 
     # ------------------ 面积计算 ------------------
     def _compute_geom_area(self, geom_id):
-        """根据 geom 类型近似计算表面积。对 mesh 用面片实际面积。"""
+        """
+        根据 geom 类型近似计算表面积。
+        对于 mesh 类型的几何体，使用实际面片面积进行精确计算。
+        """
         geom_type = self.model.geom_type[geom_id]
         size = self.model.geom_size[geom_id]
 
@@ -358,7 +336,15 @@ class ScenePointCloudExtractor:
             return 0.0
 
     def _compute_mesh_area(self, geom_id):
-        """对 mesh，遍历三角面计算真实表面积。"""
+        """
+        对于 mesh 类型的几何体，通过遍历其三角面片计算真实表面积。
+
+        参数：
+            geom_id: int 几何体的 ID
+
+        返回：
+            total_area: float 该 mesh 的总表面积
+        """
         mesh_id = self.model.geom_dataid[geom_id]
         vert_adr = self.model.mesh_vertadr[mesh_id]
         vert_num = self.model.mesh_vertnum[mesh_id]
@@ -376,20 +362,29 @@ class ScenePointCloudExtractor:
 
     # ------------------ 各种几何采样 ------------------
     def _sample_points_on_box(self, size, n):
-        """在盒子表面随机均匀采样 n 个点。size=(x,y,z)为半尺寸。"""
+        """
+        在盒子表面随机均匀采样 n 个点。
+        
+        参数：
+            size: tuple, 盒子的半尺寸 (x, y, z)
+            n: int, 需要采样的点数
+
+        返回：
+            points: (n,3) 的采样点数组，位于盒子表面
+        """
         x, y, z = size
         areas = np.array([y*z, x*z, x*y])  # 三个面对称面
         areas = np.concatenate([areas, areas])  # 六个面
         total_area = np.sum(areas)
-        # 计算每个面的采样数
+        # 计算每个面的采样点数
         face_points = (n * areas / total_area).astype(int)
 
-        # 因为有向下取整，可能 sum(face_points) < n，所以再补一些
+        # 因为取整可能导致总数小于 n，所以根据余数补足
         allocated_so_far = face_points.sum()
         leftover = n - allocated_so_far
         if leftover > 0:
             remainders = (n * areas / total_area) - face_points
-            sorted_idx = np.argsort(-remainders)  # 降序
+            sorted_idx = np.argsort(-remainders)  # 按降序排序余数
             face_points[sorted_idx[:leftover]] += 1
 
         points = []
@@ -423,6 +418,16 @@ class ScenePointCloudExtractor:
         return np.vstack(points)
 
     def _sample_points_on_sphere(self, radius, n):
+        """
+        在球面上随机均匀采样 n 个点。
+
+        参数：
+            radius: float, 球的半径
+            n: int, 需要采样的点数
+
+        返回：
+            (n,3) 的采样点数组，位于球面上
+        """
         phi = np.arccos(1 - 2 * np.random.rand(n))
         theta = 2 * np.pi * np.random.rand(n)
         x = radius * np.sin(phi) * np.cos(theta)
@@ -431,59 +436,78 @@ class ScenePointCloudExtractor:
         return np.column_stack((x, y, z))
 
     def _sample_points_on_cylinder(self, radius, height, n):
+        """
+        在圆柱表面随机均匀采样 n 个点，包含侧面和上下两个端面。
+
+        参数：
+            radius: float, 圆柱半径
+            height: float, 圆柱高度
+            n: int, 需要采样的点数
+
+        返回：
+            (n,3) 的采样点数组，位于圆柱表面
+        """
         side_area = 2 * np.pi * radius * height
         cap_area  = np.pi * radius**2
         areas = np.array([side_area, 2*cap_area])
         total = np.sum(areas)
 
-        # 分配
+        # 计算侧面应采样的点数
         side_count = int(n * side_area / total)
-        # 再做余数分配
-        # 这里为了简单，分两步
-        # 先给 side_count, 再剩余给顶底
         leftover = n - side_count
-        # 顶底合在一起 leftover
-        # 按 1:1 分成 top_count, bot_count
+        # 将剩余的点数平均分配给上下两个端面
         top_count = leftover // 2
         bot_count = leftover - top_count
 
-        # 侧面
+        # 侧面采样
         theta = 2 * np.pi * np.random.rand(side_count)
         zvals = np.random.uniform(-height/2, height/2, side_count)
         x = radius * np.cos(theta)
         y = radius * np.sin(theta)
         side_points = np.column_stack((x, y, zvals))
 
-        # 顶面
-        r = np.sqrt(np.random.rand(top_count)) * radius
-        theta_cap = 2 * np.pi * np.random.rand(top_count)
-        x_top = r * np.cos(theta_cap)
-        y_top = r * np.sin(theta_cap)
+        # 顶面采样
+        r_top = np.sqrt(np.random.rand(top_count)) * radius
+        theta_top = 2 * np.pi * np.random.rand(top_count)
+        x_top = r_top * np.cos(theta_top)
+        y_top = r_top * np.sin(theta_top)
         z_top = np.full(top_count, height/2)
         top_points = np.column_stack((x_top, y_top, z_top))
 
-        # 底面
-        r = np.sqrt(np.random.rand(bot_count)) * radius
-        theta_cap = 2 * np.pi * np.random.rand(bot_count)
-        x_bot = r * np.cos(theta_cap)
-        y_bot = r * np.sin(theta_cap)
+        # 底面采样
+        r_bot = np.sqrt(np.random.rand(bot_count)) * radius
+        theta_bot = 2 * np.pi * np.random.rand(bot_count)
+        x_bot = r_bot * np.cos(theta_bot)
+        y_bot = r_bot * np.sin(theta_bot)
         z_bot = np.full(bot_count, -height/2)
         bot_points = np.column_stack((x_bot, y_bot, z_bot))
 
         return np.vstack((side_points, top_points, bot_points))
 
     def _sample_points_on_capsule(self, radius, height, n):
+        """
+        在胶囊体表面随机均匀采样 n 个点，包含圆柱部分和两端半球部分。
+
+        参数：
+            radius: float, 胶囊体半径
+            height: float, 圆柱部分的高度
+            n: int, 需要采样的点数
+
+        返回：
+            (n,3) 的采样点数组，位于胶囊表面
+        """
         cylinder_area = 2 * np.pi * radius * height
         sphere_area   = 4 * np.pi * radius**2
         total_area = cylinder_area + sphere_area
 
+        # 按比例分配点数给圆柱部分和球面部分
         cyl_count = int(n * (cylinder_area / total_area))
         sph_count = n - cyl_count
 
-        # 圆柱
+        # 圆柱部分采样
         cylinder_pts = self._sample_points_on_cylinder(radius, height, cyl_count)
 
-        # 整球面再拆上下
+        # 对球面部分进行采样并分割成上下半球
         sphere_pts = self._sample_points_on_sphere(radius, sph_count)
         half = sph_count // 2
         top_sphere    = sphere_pts[:half] + np.array([0, 0,  height/2])
@@ -492,6 +516,16 @@ class ScenePointCloudExtractor:
         return np.vstack((cylinder_pts, top_sphere, bottom_sphere))
 
     def _sample_points_on_ellipsoid(self, size, n):
+        """
+        在椭球表面随机均匀采样 n 个点。
+
+        参数：
+            size: tuple, 椭球的半轴长度 (a, b, c)
+            n: int, 需要采样的点数
+
+        返回：
+            (n,3) 的采样点数组，位于椭球表面
+        """
         a, b, c = size
         phi = np.arccos(1 - 2*np.random.rand(n))
         theta = 2*np.pi*np.random.rand(n)
@@ -501,6 +535,16 @@ class ScenePointCloudExtractor:
         return np.column_stack((x, y, z))
 
     def _sample_points_on_mesh(self, geom_id, n):
+        """
+        在 mesh 表面随机采样 n 个点。
+
+        参数：
+            geom_id: int, mesh 几何体的 ID
+            n: int, 需要采样的点数
+
+        返回：
+            (n,3) 的采样点数组，位于 mesh 表面
+        """
         mesh_id = self.model.geom_dataid[geom_id]
         vert_adr = self.model.mesh_vertadr[mesh_id]
         vert_num = self.model.mesh_vertnum[mesh_id]
@@ -510,7 +554,7 @@ class ScenePointCloudExtractor:
         vertices = self.model.mesh_vert[vert_adr : vert_adr + vert_num].reshape(-1, 3)
         faces = self.model.mesh_face[face_adr : face_adr + face_num].reshape(-1, 3)
 
-        # 面积
+        # 计算每个面片的面积
         face_areas = np.zeros(face_num, dtype=np.float64)
         for i, f in enumerate(faces):
             v0, v1, v2 = vertices[f[0]], vertices[f[1]], vertices[f[2]]
@@ -518,9 +562,10 @@ class ScenePointCloudExtractor:
 
         total_area = face_areas.sum()
         if total_area < 1e-12:
-            # mesh退化 => 直接返回部分顶点
+            # 如果 mesh 面积退化，则直接返回部分顶点以避免除零错误
             return vertices[:min(len(vertices), n)]
 
+        # 根据面片面积计算采样概率
         face_probs = face_areas / total_area
         face_counts = np.random.multinomial(n, face_probs)
 
@@ -531,6 +576,7 @@ class ScenePointCloudExtractor:
             f = faces[face_idx]
             v0, v1, v2 = vertices[f[0]], vertices[f[1]], vertices[f[2]]
 
+            # 在三角形面内均匀采样
             u = np.random.rand(count)
             v = np.random.rand(count)
             is_over = (u + v) > 1.0
@@ -544,10 +590,10 @@ class ScenePointCloudExtractor:
 
         return np.vstack(sampled_points)
 
-
 class PointCloudSaver:
     """
     用于保存点云的工具类。
+    提供将点云数据保存为 PLY 文件的功能，以便后续可视化或分析。
     """
 
     def __init__(self, filename='/home/star/Yanjun/RL-VLM-F/html/point_cloud-ori.ply'):
@@ -559,15 +605,29 @@ class PointCloudSaver:
         """
         self.filename = filename
 
-
     def save_point_cloud(self, point_cloud):
+        """
+        异步保存点云数据到指定文件。
+
+        参数：
+            point_cloud: numpy 数组，形状为 (N,6)，前3列为 xyz 坐标，后3列为 rgb 颜色。
+        """
         threading.Thread(target=self._save_point_cloud_file, args=(point_cloud,)).start()
 
     def _save_point_cloud_file(self, point_cloud):
+        """
+        实际执行点云文件保存操作的内部方法。
+
+        参数：
+            point_cloud: numpy 数组，形状为 (N,6)
+        """
         try:
             pcd = o3d.geometry.PointCloud()
+            # 提取点的坐标信息
             pcd.points = o3d.utility.Vector3dVector(point_cloud[:, :3])
-            pcd.colors = o3d.utility.Vector3dVector(point_cloud[:, 3:])
+            # 提取点的颜色信息
+            pcd.colors = o3d.utility.Vector3dVector(point_cloud[:, 3:] )
+            # 写入点云到文件
             o3d.io.write_point_cloud(self.filename, pcd)
         except Exception as e:
             print(f"Error saving point cloud: {e}")

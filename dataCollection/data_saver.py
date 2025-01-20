@@ -21,7 +21,7 @@ class BaseSaver:
     def __init__(
         self, 
         task,
-        output_dir, 
+        output_dir,
         max_items=500, # 450个就足够组10w条偏好对数据
         sample_compare_size=256,
         use_ann_search=True,
@@ -161,13 +161,17 @@ class BaseSaver:
     def _remove_by_id(self, old_id):
         """
         使用 FAISS 提供的 remove_ids 方法通过ID删除指定数据，并清理相关资源。
+        同时删除与该ID关联的第一个和第二个点云文件（如果存在）。
         """
-        # 移除文件和meta信息
+        # 移除文件和meta信息，包括第一个和第二个点云文件
         meta = self.index2meta.pop(old_id, None)
         if meta:
-            old_path = os.path.join(self.output_dir, meta["filename"])
-            if os.path.exists(old_path):
-                os.remove(old_path)
+            first_path = os.path.join(self.output_dir, meta.get("filename_first", ""))
+            second_path = os.path.join(self.second_output_dir, meta.get("filename_second", ""))
+            if os.path.exists(first_path):
+                os.remove(first_path)
+            if os.path.exists(second_path):
+                os.remove(second_path)
 
         # 使用 FAISS 的 remove_ids 方法删除索引中的数据
         if self.use_ann_search:
@@ -327,7 +331,7 @@ class ImageSaver(BaseSaver):
 
         if self.use_ann_search:
             self.faiss_index.add_with_ids(emb, np.array([self.current_global_id], dtype=np.int64))
-            self.index2meta[self.current_global_id] = {"filename": file_name}
+            self.index2meta[self.current_global_id] = {"filename_first": file_name}
         else:
             self.saved_embeddings = torch.cat([
                 self.saved_embeddings, 
@@ -372,13 +376,34 @@ class SimplePointNetFeatureExtractor(nn.Module):
 
 
 class PointCloudSaver(BaseSaver):
-    def __init__(self, **kwargs):
+    def __init__(self, second_output_dir=None, **kwargs):
+        """
+        初始化点云保存器，支持保存单个或双数组形式的点云数据。
+
+        参数:
+            second_output_dir (str): 第二个点云数组的保存目录路径。如果提供了此参数，
+                                       则保存器将支持双路径保存。
+            其他参数同 BaseSaver
+        """
         super().__init__(**kwargs)
         self.feature_extractor = SimplePointNetFeatureExtractor(input_dim=6, output_dim=512)\
                                     .to(self.device).eval()
+        # 如果指定了第二个输出路径，则创建该目录
+        self.second_output_dir = None
+        if second_output_dir:
+            self.second_output_dir = os.path.join(second_output_dir, self.task)
+            os.makedirs(self.second_output_dir, exist_ok=True)
 
-    def _compute_embedding(self, pointcloud_np):
-        """计算输入点云的嵌入向量"""
+    def _compute_embedding(self, pointcloud_input):
+        """
+        计算输入点云的嵌入向量。如果输入是列表，则取第一个元素进行计算。
+        """
+        # 检查输入是否为列表形式，取第一个点云数组进行嵌入计算
+        if isinstance(pointcloud_input, list):
+            pointcloud_np = pointcloud_input[0]
+        else:
+            pointcloud_np = pointcloud_input
+
         if pointcloud_np.ndim != 2 or pointcloud_np.shape[1] != 6:
             raise ValueError(f"点云数据应为形状[N,6]，当前形状为{pointcloud_np.shape}")
         pc_tensor = torch.from_numpy(pointcloud_np).float().unsqueeze(0).to(self.device)
@@ -396,6 +421,9 @@ class PointCloudSaver(BaseSaver):
         """批量计算点云嵌入"""
         tensors = []
         for pc in pointcloud_list:
+            # 如果输入是列表形式，则取第一个元素
+            if isinstance(pc, list):
+                pc = pc[0]
             if pc.ndim != 2 or pc.shape[1] != 6:
                 raise ValueError(f"点云数据应为形状[N,6]，当前形状为{pc.shape}")
             tensors.append(torch.from_numpy(pc).float())
@@ -406,20 +434,47 @@ class PointCloudSaver(BaseSaver):
         embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
         return embeddings
 
-    def _do_save(self, pointcloud, emb):
-        """保存点云文件及更新索引/列表"""
+    def _do_save(self, pointcloud_input, emb):
+        """
+        保存点云文件及更新索引/列表。
+        如果输入是列表形式，则分别保存第一个和第二个点云数组到不同路径。
+        """
+        # 初始化文件名和路径
         file_name = f"pointcloud_{self.current_global_id:06d}.npy"
         file_path = os.path.join(self.output_dir, file_name)
-        np.save(file_path, pointcloud)
 
+        # 检查输入是否为列表形式，分别处理
+        if isinstance(pointcloud_input, list):
+            # 分解列表为第一个和第二个点云数组
+            first_pc, second_pc = pointcloud_input[0], pointcloud_input[1]
+        else:
+            first_pc = pointcloud_input
+            second_pc = None  # 没有第二个点云数组
+
+        # 保存第一个点云数组
+        np.save(file_path, first_pc)
+
+        # 如果存在第二个点云数组且已指定第二输出路径，则保存第二个
+        second_file_name = None
+        if second_pc is not None and self.second_output_dir:
+            second_file_name = f"pointcloud_{self.current_global_id:06d}.npy"
+            second_file_path = os.path.join(self.second_output_dir, second_file_name)
+            np.save(second_file_path, second_pc)
+
+        # 更新索引和元数据
         if self.use_ann_search:
             self.faiss_index.add_with_ids(emb, np.array([self.current_global_id], dtype=np.int64))
-            self.index2meta[self.current_global_id] = {"filename": file_name}
+            # 存储第一和第二个文件名信息
+            meta_info = {"filename_first": file_name}
+            if second_file_name:
+                meta_info["filename_second"] = second_file_name
+            self.index2meta[self.current_global_id] = meta_info
         else:
             self.saved_embeddings = torch.cat([
                 self.saved_embeddings,
                 torch.from_numpy(emb).to(self.device)
             ], dim=0)
+            # 仅记录第一个文件名，第二个文件名不用于非ANN模式下的检索和替换逻辑
             self.saved_records.append((self.current_global_id, file_name))
 
         self.current_global_id += 1

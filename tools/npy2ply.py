@@ -53,7 +53,7 @@ def batch_convert_npy_to_ply(input_folder, output_folder):
 
 # 使用示例：
 # 指定输入文件夹路径和输出文件夹路径
-input_folder = "visualization"
-output_folder = "v-ply"
+input_folder = "tests"
+output_folder = "tests"
 
 batch_convert_npy_to_ply(input_folder, output_folder)
