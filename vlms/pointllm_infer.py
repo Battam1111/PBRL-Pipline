@@ -68,6 +68,9 @@ def init_model(model_name="/home/star/Yanjun/PointLLM/checkpoints/PointLLM_7B_v1
     """
     global MODEL, TOKENIZER, POINT_BACKBONE_CONFIG, KEYWORDS, MM_USE_POINT_START_END, CONV_TEMPLATE
 
+    # 测试模型
+    model_name = "YirongSun/pcllm_test1"
+
     # 防止重复初始化
     if MODEL is not None and TOKENIZER is not None:
         print("PointLLM model already initialized.")
@@ -83,6 +86,7 @@ def init_model(model_name="/home/star/Yanjun/PointLLM/checkpoints/PointLLM_7B_v1
         use_cache=True,
         torch_dtype=torch.bfloat16
     ).to(device)
+
 
     # 初始化模型的特殊配置
     MODEL.initialize_tokenizer_point_backbone_config_wo_embedding(TOKENIZER)

@@ -46,7 +46,8 @@ class ModelArguments:
 class DataArguments:
     data_path: str = field(default="/code/syr/PointLLM/data/objaverse_data", metadata={"help": "Path to the training data."})
     anno_path: str = field(default="/code/syr/PointLLM/data/anno_data/PointLLM_brief_description_660K_combined.json", metadata={"help": "Path to the utterance data. If None, will use referit3d by defautl."})
-    use_color: bool = field(default=True, metadata={"help": "Whether to use color."})
+    # 控制颜色
+    use_color: bool = field(default=False, metadata={"help": "Whether to use color."})
     data_debug_num: int = field(default=-1, metadata={"help": "Number of data to use in debug mode. If larger than 0, use debug mode, else use the whole data"})
     split_train_val: bool = field(default=False, metadata={"help": "Whether to split train and val."})
     split_ratio: float = field(default=0.9, metadata={"help": "Ratio of train and val."})

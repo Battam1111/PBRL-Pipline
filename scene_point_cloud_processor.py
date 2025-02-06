@@ -30,7 +30,7 @@ class ScenePointCloudExtractor:
         self.task_related_body_names = task_related_body_names if task_related_body_names else []
         self.num_points = num_points
         # 用于无限制点云的密集采样因子，可以根据需要调整
-        self.dense_factor = 100  
+        self.dense_factor = 10.0  
         if random_seed is not None:
             np.random.seed(random_seed)
 
@@ -85,6 +85,9 @@ class ScenePointCloudExtractor:
             limited_all_points = np.vstack(limited_points)    # (M1, 3)
             limited_all_colors = np.vstack(limited_colors)    # (M1, 4)
             limited_point_cloud = np.hstack((limited_all_points, limited_all_colors))[:, :6]  # (M1,6)
+
+            # 无颜色
+            # limited_point_cloud = np.hstack((limited_all_points, limited_all_colors))[:, :3]  # (M1,3)
 
         # 合并并处理密集点云数组
         if len(dense_points) == 0:

@@ -2,7 +2,7 @@ name: rlvlmf
 channels:
   - defaults
 dependencies:
-  - python=3.9
+  - python=3.9.19
   - absl-py
   - pyparsing
   - pip

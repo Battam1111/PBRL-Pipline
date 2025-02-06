@@ -264,6 +264,7 @@ class PointLLMLlamaForCausalLM(LlamaForCausalLM):
     config_class = PointLLMConfig
 
     def __init__(self, config):
+
         super(LlamaForCausalLM, self).__init__(config)
         self.model = PointLLMLlamaModel(config)
 

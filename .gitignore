@@ -56,3 +56,6 @@ checkpoints/
 data/
 dataCollection/Dataset/
 tests/
+bak/
+dataGenerationGemini/config.py
+dataGenerationOpenai/config.py

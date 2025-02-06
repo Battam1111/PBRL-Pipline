@@ -13,7 +13,8 @@ from reward_model import RewardModel  # 引入奖励模型模块
 from reward_model_score import RewardModelScore  # 引入基于分数的奖励模型模块
 from collections import deque  # 引入双端队列
 from prompt import clip_env_prompts  # 引入用于提示的环境变量
-from dataCollection.data_saver import ImageSaver, PointCloudSaver  # 保存图像函数
+from dataCollection.DataSaver.image_saver import ImageSaver # 保存图像函数
+from dataCollection.DataSaver.pointcloud_saver import PointCloudSaver # 保存点云函数
 
 import utils  # 实用函数
 import hydra  # 用于配置管理的库
@@ -527,7 +528,7 @@ class Workspace(object):
             # self.image_saver.save_data(render_image)
 
             # 使用保存器保存点云
-            self.pointcloud_saver.save_data(point_cloud)
+            self.pointcloud_saver.save_data(point_cloud, reward)
 
             if self.cfg.image_reward and render_image is not None:
                 if 'Water' not in self.cfg.env and 'Rope' not in self.cfg.env:

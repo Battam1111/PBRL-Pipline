@@ -9,14 +9,15 @@ from pointllm.model.utils import KeywordsStoppingCriteria
 from pointllm.data import ObjectPointCloudDataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
-from pointllm.eval.evaluator import start_evaluation
+#from pointllm.eval.evaluator import start_evaluation
 
 import os
 import json
-
+#, (1
+#"This is an object of ",
 PROMPT_LISTS = [
     "What is this?",
-    "This is an object of ",
+    "1. What is represented in Point Cloud 1?\n2. What is represented in Point Cloud 2?",
     "Caption this 3D model in detail."
 ]
 
@@ -55,8 +56,8 @@ def get_dataloader(dataset, batch_size, shuffle=False, num_workers=4):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
     return dataloader
 
-def generate_outputs(model, tokenizer, input_ids, point_clouds, stopping_criteria, do_sample=True, temperature=1.0, top_k=50, max_length=2048, top_p=0.95):
-    model.eval() 
+def generate_outputs(model, tokenizer, input_ids, point_clouds, stopping_criteria, do_sample=True, temperature=0.75, top_k=30, max_length=2048, top_p=0.75):
+    model.eval()  #此时的point_cloud size为[6,8192,6] ; 就是6个点云样本； input_ids.shape [6, 560]- 6个已经token化的文本序列，此时留空了位置（point patch * len位置）已经被编码为了32000；
     with torch.inference_mode():
         output_ids = model.generate(
             input_ids,
@@ -83,15 +84,16 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
 
     results = {"prompt": qs}
 
-    point_backbone_config = model.get_model().point_backbone_config
-    point_token_len = point_backbone_config['point_token_len']
+    point_backbone_config = model.get_model().point_backbone_config  
+    point_token_len = point_backbone_config['point_token_len'] # yaml 可以看到有num_group + 1构成；为定值
     default_point_patch_token = point_backbone_config['default_point_patch_token']
     default_point_start_token = point_backbone_config['default_point_start_token']
     default_point_end_token = point_backbone_config['default_point_end_token']
     mm_use_point_start_end = point_backbone_config['mm_use_point_start_end']
 
     if mm_use_point_start_end:
-        qs = default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + '\n' + qs
+        qs = "Consider the following two point clouds:\nPoint Cloud 1:\n"+default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + "\nPoint Cloud 2:\n" + default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + '\n' + qs
+        #qs = "Consider the following two point clouds:\n" + default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token +  '\n' + qs
     else:
         qs = default_point_patch_token * point_token_len + '\n' + qs
     
@@ -99,21 +101,41 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
     conv.append_message(conv.roles[1], None)
 
     prompt = conv.get_prompt()
-    inputs = tokenizer([prompt])
-
-    input_ids_ = torch.as_tensor(inputs.input_ids).cuda() # * tensor of 1, L
+    inputs = tokenizer([prompt]) #bs = 1
+    
+    input_ids_ = torch.as_tensor(inputs.input_ids).cuda() # * tensor of 1, L // 此时的inputs里面有input_ids和attention mask；
 
     stopping_criteria = KeywordsStoppingCriteria([stop_str], tokenizer, input_ids_)
 
     responses = []
 
     for batch in tqdm(dataloader):
+        # point_clouds1 = batch["point_clouds1"].cuda().to(model.dtype) # * tensor of B, N, C(3)
+        # point_clouds2 = batch["point_clouds2"].cuda().to(model.dtype) # * tensor of B, N, C(3)
+        # object_ids1 = batch["object_ids1"] # * list of string 
+        # object_ids2 = batch["object_ids2"] # * list of string
+        
+        #point cloud 改为数组[pc1,pc2] ; object_id 改为'object_id1-object_id2'
+        
         point_clouds = batch["point_clouds"].cuda().to(model.dtype) # * tensor of B, N, C(3)
+        #__getitem__返回的data_dict[point_clouds]本质上应该是一个list，里面有两个tensor，每个tensor是一个点云，size应该是[2,8192,6]，但是类型被转为了tensor，不过没关系不影响后面提取和使用
+        #但是经过了collate_fn的处理，把样本放在一个batch内，size变为了[2,2,8192,6]，类型变为了torch.FloatTensor；为了方便后续处理 ；
+        #现在需要把最外层的类型设置为list，即point_clounds为list of tensor
+        
+        #version1
+        #当前point_clounds为[bs,2,8192,6];把2个点云concatenate到一起，变为[bs,16384,6]
+        # now point_clounds is a tensor with shape [bs,2,8192,6]; concatenate 2 point clouds to [bs,16384,6]( a tensor not a list);
+        #point_clouds = torch.cat([point_clouds[:,0],point_clouds[:,1]],dim=1) # * tensor of B, 2N, C(3)
+        
+        #version2
+        #把point_clounds转化为list of tensor,长为bs，每个tensor为[2,8192,6]
+        point_clouds = [point_clouds[i] for i in range(len(point_clouds))] # * list of tensor
+        
         object_ids = batch["object_ids"] # * list of string 
+        
+        batchsize = len(object_ids) # 由于object_ids1和object_ids2长度相同，所以这里取object_ids1的长度即可
 
-        batchsize = len(object_ids)
-
-        input_ids = input_ids_.repeat(batchsize, 1) # * tensor of B, L
+        input_ids = input_ids_.repeat(batchsize, 1) # * tensor of B, L   # * 重复batchsize次,是为了和point_clouds对应起来；
 
         outputs = generate_outputs(model, tokenizer, input_ids, point_clouds, stopping_criteria) # List of str, length is B
 
@@ -160,7 +182,7 @@ def main(args):
 
         # * convert annos file from [{"object_id": }] to {"object_id": }
         annos = {anno["object_id"]: anno["conversations"][1]['value'] for anno in annos}
-
+        #annos = {anno["object_id1"] + '-' + anno["object_id2"]: anno["conversations"][1]['value'] for anno in annos}
         print(f'[INFO] Start generating results for {args.output_file}.')
         results = start_generation(model, tokenizer, conv, dataloader, annos, args.prompt_index, args.output_dir, args.output_file)
 
@@ -174,35 +196,35 @@ def main(args):
         with open(args.output_file_path, 'r') as fp:
             results = json.load(fp)
 
-    if args.start_eval:
-        evaluated_output_file = args.output_file.replace(".json", f"_evaluated_{args.gpt_type}.json")
-        eval_type_mapping = {
-            "captioning": "object-captioning",
-            "classification": "open-free-form-classification"
-        }
-        start_evaluation(results, output_dir=args.output_dir, output_file=evaluated_output_file, eval_type=eval_type_mapping[args.task_type], model_type=args.gpt_type, parallel=True, num_workers=20)
+    # if args.start_eval:
+    #     evaluated_output_file = args.output_file.replace(".json", f"_evaluated_{args.gpt_type}.json")
+    #     eval_type_mapping = {
+    #         "captioning": "object-captioning",
+    #         "classification": "open-free-form-classification"
+    #     }
+    #     start_evaluation(results, output_dir=args.output_dir, output_file=evaluated_output_file, eval_type=eval_type_mapping[args.task_type], model_type=args.gpt_type, parallel=True, num_workers=20)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, \
-        default="RunsenXu/PointLLM_7B_v1.2") 
+        default="/code/syr/PointLLM/output/PointLLM_train_stage1_2ob/PointLLM_train_stage1") 
 
     # * dataset type
-    parser.add_argument("--data_path", type=str, default="data/objaverse_data", required=False)
-    parser.add_argument("--anno_path", type=str, default="data/anno_data/PointLLM_brief_description_val_200_GT.json", required=False)
+    parser.add_argument("--data_path", type=str, default="/code/syr/PointLLM/data/objaverse_data", required=False)
+    parser.add_argument("--anno_path", type=str, default="/code/syr/PointLLM/data/anno_data/PointLLM_brief_description_val_200_GT_combined.json", required=False)
     parser.add_argument("--pointnum", type=int, default=8192)
-    parser.add_argument("--use_color",  action="store_true", default=False)
+    parser.add_argument("--use_color",  action="store_true", default=True)
 
     # * data loader, batch_size, shuffle, num_workers
-    parser.add_argument("--batch_size", type=int, default=6)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--shuffle", type=bool, default=False)
     parser.add_argument("--num_workers", type=int, default=10)
 
     # * evaluation setting
-    parser.add_argument("--prompt_index", type=int, default=0)
+    parser.add_argument("--prompt_index", type=int, default=1)
     parser.add_argument("--start_eval", action="store_true", default=False)
     parser.add_argument("--gpt_type", type=str, default="gpt-4-0613", choices=["gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-4-0613", "gpt-4-1106-preview"], help="Type of the model used to evaluate.")
-    parser.add_argument("--task_type", type=str, default="captioning", choices=["captioning", "classification"], help="Type of the task to evaluate.")
+    parser.add_argument("--task_type", type=str, default="classification", choices=["captioning", "classification"], help="Type of the task to evaluate.")
 
     args = parser.parse_args()
 
