@@ -7,10 +7,12 @@ jsonl_manager.py
 主要功能：
   1. 根据预定义对话模板构造任务请求 JSONL，每一行包含 custom_id、请求方法、URL 以及请求体（包含 prompt 信息）。
   2. 将大 JSONL 文件按指定行数分块，便于批量处理。
-  3. 将多个处理结果文件合并为最终输出文件，并根据 custom_id 排序。
-  
-注：构造任务请求时，将原 OpenAI 的 "messages" 格式转换为 Gemini 的 "contents" 格式，
-     其中 "contents" 数组中每个元素包含 "role" 与 "parts" 字段。
+  3. 将多个处理结果文件合并为最终输出文件，并按 custom_id 排序。
+
+构造任务请求时，将原 OpenAI 的 "messages" 格式转换为 Gemini 的 "contents" 格式，
+其中 "contents" 数组中每个元素包含 "role" 与 "parts" 字段。
+
+所有步骤均附有详细中文注释。
 """
 
 import os
@@ -19,7 +21,7 @@ import json
 import time
 from typing import List, Dict
 from image_stitcher import stitch_images
-from config import SYSTEM_PROMPT, GEMINI_MODEL, single_round_template, GEMINI_API_URL_TEMPLATE, GEMINI_API_KEY
+from config import SYSTEM_PROMPT, GEMINI_MODEL, single_round_template
 
 class JSONLManager:
     def __init__(self, env_name: str, objective: str, samples_dict: Dict[int, dict], hf_uploader):
@@ -93,30 +95,28 @@ class JSONLManager:
         os.makedirs(os.path.dirname(out_file), exist_ok=True)
         with open(out_file, "w", encoding="utf-8") as outf:
             for idx, (sidA, sidB, tag_info) in enumerate(pairs, start=1):
-                # 获取两个样本的图像（或拼接后图像）的远程 URL
                 situation1_url = self._gather_all_views_for_sid(sidA)
                 situation2_url = self._gather_all_views_for_sid(sidB)
-                # 根据预定义模板构造用户输入
                 user_content = single_round_template.format(
                     situation1_urls=situation1_url,
                     situation2_urls=situation2_url,
                     objective=self.objective
                 )
+                # 将系统提示与用户内容整合到一条消息中，以避免使用 system 角色
+                combined_prompt = SYSTEM_PROMPT + "\n" + user_content
+
                 custom_id = f"{self.env_name}-{idx}"
-                # 构造 Gemini 请求体，采用 "contents" 数组格式
                 body = {
                     "model": GEMINI_MODEL,
                     "contents": [
-                        {"role": "system", "parts": [{"text": SYSTEM_PROMPT}]},
-                        {"role": "user", "parts": [{"text": user_content}]}
+                        {"role": "user", "parts": [{"text": combined_prompt}]}
                     ],
                     "maxOutputTokens": 2000
                 }
                 data = {
                     "custom_id": custom_id,
                     "method": "POST",
-                    # 使用官方 Gemini API 端点，填入 GEMINI_API_KEY（此处可直接填入配置中的密钥）
-                    "url": GEMINI_API_URL_TEMPLATE.format(model=GEMINI_MODEL, api_key=GEMINI_API_KEY),
+                    "url": "",  # 如果后续直接调用 SDK，此字段可忽略
                     "body": body
                 }
                 outf.write(json.dumps(data, ensure_ascii=False) + "\n")

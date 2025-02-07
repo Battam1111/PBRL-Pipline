@@ -13,7 +13,7 @@ main.py
 """
 
 import time
-from config import objective_env_prompts
+from config import objective_env_prompts, MAXPAIRS
 from uploader import HuggingFaceUploader
 from environment_processor import EnvironmentProcessor
 
@@ -27,7 +27,7 @@ def main():
     for env_name, objective in objective_env_prompts.items():
         processor = EnvironmentProcessor(env_name, objective, hf_uploader, flip_pair_order=False)
         # 示例：限制最多生成100个样本对，可根据需要调整
-        processor.process_environment(max_pairs=1)
+        processor.process_environment(max_pairs=MAXPAIRS)
         time.sleep(3)
     print("\n[完成] 全部环境处理完毕。")
 

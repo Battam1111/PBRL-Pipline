@@ -4,11 +4,11 @@
 pair_generator.py
 
 本模块负责生成样本对，支持以下策略：
-  1. 跨 bin 配对：将最小 bin 与最大 bin 的样本随机配对。
+  1. 跨 bin 配对：随机配对不同 bin 中的样本。
   2. 邻近 bin 配对：对相邻 bin 中的样本进行随机配对。
-  3. 同一 bin 内基于 embedding 距离配对：分别选择距离最小和最大的 topN 对。
+  3. 同一 bin 内基于 embedding 距离配对：选择 embedding 距离最小和最大的若干对。
 
-同时，对生成的样本对进行去重，并限制每个样本出现次数，确保任务数据多样均衡。
+同时，对生成的样本对进行去重，并限制每个样本出现次数，确保任务数据多样且均衡。
 """
 
 import random
@@ -52,7 +52,7 @@ class PairGenerator:
           max_pairs: 最终生成的样本对数量上限。
           random_seed: 随机种子，用于结果复现。
           usage_limit: 每个样本在所有对中最多出现次数。
-          topN_intra_bin: 同一 bin 内选择的 topN 配对数。
+          topN_intra_bin: 同一 bin 内选择的 topN 对数。
         返回：
           样本对列表，每个元素为 (sampleA, sampleB, 标签)。
         """

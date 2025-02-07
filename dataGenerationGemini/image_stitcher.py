@@ -9,7 +9,7 @@ image_stitcher.py
   - 水平布局（horizontal）
   - 垂直布局（vertical）
 
-确保拼接后图像无重叠，且保持原始图像质量。
+确保拼接后图像无重叠且保持原始图像质量。
 """
 
 import os
