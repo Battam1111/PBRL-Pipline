@@ -3,188 +3,233 @@
 """
 pair_generator.py
 
-本模块负责生成样本对，用于后续任务对比请求构建。
-支持以下策略：
-  1. 跨 bin 配对：选取最小 bin 与最大 bin 的样本进行随机配对
-  2. 邻近 bin 配对：选取相邻 bin 的样本进行随机配对
-  3. 同一 bin 内基于 embedding 距离配对：分别选择距离最小和最大的 topN 对
+本模块负责基于加载的样本数据生成样本对（配对），支持以下策略：
+  1. 跨 bin 配对（不同 bin 之间）
+  2. 邻近 bin 配对（bin 差值为 1）
+  3. 同 bin 内基于 embedding 距离（选距离最小和最大的 topN 对）
+  4. 同 bin 随机采样配对
 
-生成过程中对重复对进行去重，并限制每个样本在所有对中出现次数，
-确保对比任务的多样性和均衡性。
+同时支持去重、限制单个样本在所有配对中出现次数等功能。
 """
 
 import random
 import math
 from typing import List, Tuple, Dict
 import numpy as np
+from utils import log
 
 def embedding_distance(embA: List[float], embB: List[float]) -> float:
     """
-    计算两个 embedding 向量的欧几里得距离
-    :param embA: 第一个 embedding 向量
-    :param embB: 第二个 embedding 向量
-    :return: 欧几里得距离
+    计算两个 embedding 向量的欧氏距离
     """
     arrA = np.array(embA, dtype=np.float32)
     arrB = np.array(embB, dtype=np.float32)
-    diff = arrA - arrB
-    return float(np.sqrt(np.dot(diff, diff)))
+    return float(np.linalg.norm(arrA - arrB))
 
 class PairGenerator:
     def __init__(self, samples_dict: Dict[int, dict]):
         """
         初始化 PairGenerator 实例
-        :param samples_dict: 样本字典，键为 sample_id
+        :param samples_dict: 样本字典，键为 sample_id，值为样本信息（包含 bin_id、embedding 等）
         """
         self.samples_dict = samples_dict
+        self.bin_map = self._group_by_bin()
+
+    def _group_by_bin(self) -> Dict[int, List[int]]:
+        """
+        将样本根据 bin_id 进行分组
+        """
+        bin_map: Dict[int, List[int]] = {}
+        for sid, info in self.samples_dict.items():
+            b = info.get("bin_id", -1)
+            bin_map.setdefault(b, []).append(sid)
+        return bin_map
 
     def generate_pairs(self,
                        max_pairs: int = None,
                        random_seed: int = 42,
                        usage_limit: int = 50,
-                       topN_intra_bin: int = 5) -> List[Tuple[int, int, str]]:
+                       topN_intra_bin: int = 5,
+                       allow_duplicates: bool = False,
+                       preserve_strategy: bool = False,
+                       strict_deduplicate: bool = True) -> List[Tuple[int, int, str]]:
         """
-        生成样本对列表，采用多种策略混合生成
-        :param max_pairs: 最终生成的样本对数量上限
-        :param random_seed: 随机种子，确保结果可复现
-        :param usage_limit: 每个样本在所有对中最多出现的次数
-        :param topN_intra_bin: 同一 bin 内基于 embedding 距离选择的 topN 对数
-        :return: 样本对列表，每个元素为 (sampleA, sampleB, 标签)
+        综合多种策略生成样本对。
+        :param max_pairs: 最多生成多少对；若为 None 则不限制
+        :param random_seed: 随机种子
+        :param usage_limit: 每个样本在所有配对中最多出现次数
+        :param topN_intra_bin: 同 bin 内基于 embedding 距离时，每种（最小/最大）选取几对
+        :param allow_duplicates: 是否允许同一对重复出现
+        :param preserve_strategy: 是否保留相同样本对不同策略标签（若 True，则同一对不同标签均保留）
+        :param strict_deduplicate: 若为 True，则完全按 (min(a,b), max(a,b)) 去重，忽略策略标签
+        :return: 列表，每项为 (sampleA, sampleB, strategyTag)
         """
         random.seed(random_seed)
-        # 按 bin_id 对样本进行分组
-        bin_map: Dict[int, List[int]] = {}
-        for sid, info in self.samples_dict.items():
-            b = info.get("bin_id", -1)
-            bin_map.setdefault(b, []).append(sid)
-        if not bin_map:
-            print("[PairGenerator] 未能构建 bin_map，返回空列表。")
-            return []
+        candidate_pairs = []
 
-        all_bins = sorted(bin_map.keys())
-        raw_pairs = []
-
-        # 策略1：跨 bin 配对（最小 bin 与最大 bin）
-        if len(all_bins) >= 2:
-            bmin, bmax = all_bins[0], all_bins[-1]
-            raw_pairs.extend(self._generate_bin_pairs_random(bin_map, bmin, bmax, "cross_bin_minmax", ratio=0.4))
+        # 策略1：跨 bin 配对（保留一定比例）
+        cross_pairs = self._generate_cross_bin_pairs(ratio=0.4)
+        candidate_pairs.extend(cross_pairs)
 
         # 策略2：邻近 bin 配对
-        if len(all_bins) > 1:
-            for i in range(len(all_bins) - 1):
-                binA, binB = all_bins[i], all_bins[i+1]
-                raw_pairs.extend(self._generate_bin_pairs_random(bin_map, binA, binB, f"neighbor_bin_{binA}_{binB}", ratio=0.3))
+        neighbor_pairs = self._generate_neighbor_bin_pairs(ratio=0.3)
+        candidate_pairs.extend(neighbor_pairs)
 
-        # 策略3：同一 bin 内基于 embedding 距离配对
-        for b_id in all_bins:
-            sids_in_bin = bin_map[b_id]
-            if len(sids_in_bin) < 2:
-                continue
-            raw_pairs.extend(self._generate_intra_bin_pairs_by_embedding(sids_in_bin, topN_intra_bin, b_id))
+        # 策略3：同 bin 内基于 embedding 距离（选择最小与最大）
+        intra_embed_pairs = self._generate_intra_bin_pairs_by_embedding(topN=topN_intra_bin)
+        candidate_pairs.extend(intra_embed_pairs)
 
-        if not raw_pairs:
-            print("[PairGenerator] 未生成任何样本对。")
+        # 策略4：同 bin 随机采样配对
+        intra_random_pairs = self._generate_random_intra_bin_pairs(ratio=0.2)
+        candidate_pairs.extend(intra_random_pairs)
+
+        if not candidate_pairs:
+            log("[PairGenerator] 未生成任何候选配对。")
             return []
 
-        # 去重和限制每个样本出现次数
-        final_pairs = self._apply_usage_and_dedup(raw_pairs, usage_limit)
+        # 去重处理
+        if not allow_duplicates:
+            if strict_deduplicate:
+                unique_pairs = self._deduplicate_pairs(candidate_pairs)
+            else:
+                if preserve_strategy:
+                    unique_pairs = self._deduplicate_pairs_with_strategy(candidate_pairs)
+                else:
+                    unique_pairs = self._deduplicate_pairs(candidate_pairs)
+        else:
+            unique_pairs = candidate_pairs
 
-        # 如数量不足，则复制填充至指定数量
+        # 限制单个样本出现次数
+        limited_pairs = self._apply_usage_limit(unique_pairs, usage_limit)
+
+        # 若指定 max_pairs，则截断或扩充（允许复制）
         if max_pairs is not None:
-            if len(final_pairs) > max_pairs:
-                random.shuffle(final_pairs)
-                final_pairs = final_pairs[:max_pairs]
-            elif len(final_pairs) < max_pairs:
-                final_pairs = self._duplicate_fill(final_pairs, needed=max_pairs)
-                if len(final_pairs) > max_pairs:
-                    random.shuffle(final_pairs)
-                    final_pairs = final_pairs[:max_pairs]
-        return final_pairs
+            if len(limited_pairs) > max_pairs:
+                random.shuffle(limited_pairs)
+                limited_pairs = limited_pairs[:max_pairs]
+            else:
+                if allow_duplicates and len(limited_pairs) < max_pairs:
+                    limited_pairs = self._duplicate_fill(limited_pairs, needed=max_pairs)
+                    random.shuffle(limited_pairs)
+                    limited_pairs = limited_pairs[:max_pairs]
 
-    def _generate_bin_pairs_random(self,
-                                   bin_map: Dict[int, List[int]],
-                                   binA: int,
-                                   binB: int,
-                                   pair_tag: str,
-                                   ratio: float) -> List[Tuple[int, int, str]]:
-        """
-        针对两个不同 bin，生成所有可能的样本对，然后随机保留部分对，并打上标签
-        :param bin_map: 按 bin 分组的样本 ID 字典
-        :param binA: 第一个 bin 编号
-        :param binB: 第二个 bin 编号
-        :param pair_tag: 配对时附加的标签
-        :param ratio: 保留对的比例
-        :return: 生成的样本对列表
-        """
-        listA = bin_map.get(binA, [])
-        listB = bin_map.get(binB, [])
-        if not listA or not listB:
-            return []
-        pairs = [(a, b, pair_tag) for a in listA for b in listB if a != b]
-        random.shuffle(pairs)
-        keep_num = int(math.ceil(len(pairs) * ratio))
-        return pairs[:keep_num]
+        log(f"[PairGenerator] 最终生成样本对数：{len(limited_pairs)}")
+        return limited_pairs
 
-    def _generate_intra_bin_pairs_by_embedding(self, sids_in_bin: List[int], topN: int, bin_id: int) -> List[Tuple[int, int, str]]:
-        """
-        在同一 bin 内基于 embedding 距离生成配对，分别选择距离最小和最大的 topN 对
-        :param sids_in_bin: 同一 bin 内的样本 ID 列表
-        :param topN: 选择的对数上限
-        :param bin_id: 当前 bin 编号，用于标签标识
-        :return: 生成的样本对列表
-        """
-        emb_list = [(sid, self.samples_dict[sid].get("embedding", []))
-                    for sid in sids_in_bin if self.samples_dict[sid].get("embedding")]
-        if len(emb_list) < 2:
-            return []
+    def _generate_cross_bin_pairs(self, ratio: float = 0.4) -> List[Tuple[int, int, str]]:
+        """生成所有不同 bin 间的样本对，并随机保留一定比例"""
+        pairs = []
+        bin_ids = sorted(self.bin_map.keys())
+        if len(bin_ids) < 2:
+            return pairs
+        for i in range(len(bin_ids)):
+            for j in range(i + 1, len(bin_ids)):
+                binA, binB = bin_ids[i], bin_ids[j]
+                listA = self.bin_map.get(binA, [])
+                listB = self.bin_map.get(binB, [])
+                if not listA or not listB:
+                    continue
+                current_pairs = [(a, b, f"cross_bin_{binA}_{binB}") for a in listA for b in listB]
+                random.shuffle(current_pairs)
+                keep_num = int(math.ceil(len(current_pairs) * ratio))
+                pairs.extend(current_pairs[:keep_num])
+        return pairs
 
-        dist_pairs = []
-        for i in range(len(emb_list)):
-            for j in range(i + 1, len(emb_list)):
-                sidA, embA = emb_list[i]
-                sidB, embB = emb_list[j]
-                dist = embedding_distance(embA, embB)
-                dist_pairs.append((sidA, sidB, dist))
-        if not dist_pairs:
-            return []
-        # 按距离排序
-        dist_pairs.sort(key=lambda x: x[2])
-        top_small = dist_pairs[:min(topN, len(dist_pairs))]
-        top_large = dist_pairs[-min(topN, len(dist_pairs)):]
-        results = [(sa, sb, f"intra_bin_{bin_id}_small") for (sa, sb, _) in top_small]
-        results += [(sa, sb, f"intra_bin_{bin_id}_large") for (sa, sb, _) in top_large]
-        return results
+    def _generate_neighbor_bin_pairs(self, ratio: float = 0.3) -> List[Tuple[int, int, str]]:
+        """生成数值相邻（差值为 1）的 bin 间样本对"""
+        pairs = []
+        bin_ids = sorted(self.bin_map.keys())
+        for i in range(len(bin_ids)):
+            for j in range(i + 1, len(bin_ids)):
+                binA, binB = bin_ids[i], bin_ids[j]
+                if abs(binA - binB) == 1:
+                    listA = self.bin_map.get(binA, [])
+                    listB = self.bin_map.get(binB, [])
+                    if not listA or not listB:
+                        continue
+                    current_pairs = [(a, b, f"neighbor_bin_{binA}_{binB}") for a in listA for b in listB]
+                    random.shuffle(current_pairs)
+                    keep_num = int(math.ceil(len(current_pairs) * ratio))
+                    pairs.extend(current_pairs[:keep_num])
+        return pairs
 
-    def _apply_usage_and_dedup(self, raw_pairs: List[Tuple[int, int, str]], usage_limit: int) -> List[Tuple[int, int, str]]:
-        """
-        去重（避免 (A,B) 与 (B,A) 重复）并限制每个样本出现次数
-        :param raw_pairs: 原始样本对列表
-        :param usage_limit: 每个样本最大允许出现次数
-        :return: 处理后的样本对列表
-        """
+    def _generate_intra_bin_pairs_by_embedding(self, topN: int = 5) -> List[Tuple[int, int, str]]:
+        """在同一 bin 内，根据 embedding 欧氏距离选取最小和最大的配对各 topN 对"""
+        pairs = []
+        for bin_id, sids in self.bin_map.items():
+            if len(sids) < 2:
+                continue
+            emb_list = [(sid, self.samples_dict[sid].get("embedding", [])) for sid in sids]
+            emb_list = [x for x in emb_list if x[1]]
+            if len(emb_list) < 2:
+                continue
+            dist_pairs = []
+            for i in range(len(emb_list)):
+                for j in range(i + 1, len(emb_list)):
+                    sidA, embA = emb_list[i]
+                    sidB, embB = emb_list[j]
+                    dist = embedding_distance(embA, embB)
+                    dist_pairs.append((sidA, sidB, dist))
+            if not dist_pairs:
+                continue
+            dist_pairs.sort(key=lambda x: x[2])
+            n = min(topN, len(dist_pairs))
+            top_small = dist_pairs[:n]
+            top_large = dist_pairs[-n:]
+            pairs.extend([(sa, sb, f"intra_bin_{bin_id}_small") for (sa, sb, _) in top_small])
+            pairs.extend([(sa, sb, f"intra_bin_{bin_id}_large") for (sa, sb, _) in top_large])
+        return pairs
+
+    def _generate_random_intra_bin_pairs(self, ratio: float = 0.2) -> List[Tuple[int, int, str]]:
+        """在同一 bin 内，随机采样一定比例的样本对"""
+        pairs = []
+        for bin_id, sids in self.bin_map.items():
+            if len(sids) < 2:
+                continue
+            all_pairs = []
+            for i in range(len(sids)):
+                for j in range(i + 1, len(sids)):
+                    all_pairs.append((sids[i], sids[j], f"intra_bin_random_{bin_id}"))
+            random.shuffle(all_pairs)
+            keep_num = int(math.ceil(len(all_pairs) * ratio))
+            pairs.extend(all_pairs[:keep_num])
+        return pairs
+
+    def _deduplicate_pairs(self, pairs: List[Tuple[int, int, str]]) -> List[Tuple[int, int, str]]:
+        """根据 (min(a,b), max(a,b)) 去重，不考虑策略标签"""
         seen = set()
-        deduped = []
-        for (a, b, tag) in raw_pairs:
-            key = (a, b) if a < b else (b, a)
+        unique = []
+        for a, b, tag in pairs:
+            key = (min(a, b), max(a, b))
             if key not in seen:
                 seen.add(key)
-                deduped.append((a, b, tag))
+                unique.append((a, b, tag))
+        return unique
+
+    def _deduplicate_pairs_with_strategy(self, pairs: List[Tuple[int, int, str]]) -> List[Tuple[int, int, str]]:
+        """根据 (min(a,b), max(a,b), tag) 去重，保留同一对但策略标签不同的情况"""
+        seen = set()
+        unique = []
+        for a, b, tag in pairs:
+            key = (min(a, b), max(a, b), tag)
+            if key not in seen:
+                seen.add(key)
+                unique.append((a, b, tag))
+        return unique
+
+    def _apply_usage_limit(self, pairs: List[Tuple[int, int, str]], usage_limit: int) -> List[Tuple[int, int, str]]:
+        """限制每个样本在所有配对中出现的最大次数"""
         usage_count = {}
-        final_pairs = []
-        for (a, b, tag) in deduped:
+        limited = []
+        for a, b, tag in pairs:
             if usage_count.get(a, 0) < usage_limit and usage_count.get(b, 0) < usage_limit:
-                final_pairs.append((a, b, tag))
+                limited.append((a, b, tag))
                 usage_count[a] = usage_count.get(a, 0) + 1
                 usage_count[b] = usage_count.get(b, 0) + 1
-        return final_pairs
+        return limited
 
     def _duplicate_fill(self, pairs: List[Tuple[int, int, str]], needed: int) -> List[Tuple[int, int, str]]:
-        """
-        当生成的样本对数量不足时，通过复制已有对进行填充，并在标签中标记复制信息
-        :param pairs: 原始样本对列表
-        :param needed: 最终需要的样本对数量
-        :return: 填充后的样本对列表
-        """
+        """当生成的配对数量不足时，允许重复复制填充到指定数量"""
         result = pairs.copy()
         if not result:
             return result

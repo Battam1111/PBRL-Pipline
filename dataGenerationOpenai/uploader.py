@@ -3,27 +3,21 @@
 """
 uploader.py
 
-本模块定义了 HuggingFaceUploader 类，用于将本地图像文件批量上传到 Hugging Face 仓库或直接以 Base64 格式返回图像数据。
-主要功能包括：
-  - 缓冲多个上传操作，当达到一定数量后一次性提交(commit)上传（适用于 "url" 模式）
-  - 上传前检查仓库是否已存在相同文件，避免重复上传
-  - 提供指数退避重试机制，处理网络限流（429）及连接异常（如 ConnectionResetError、ProtocolError 等）
-  - 内部维护上传缓存，避免重复上传同一文件
-  - 根据仓库类型自动构造正确的图像访问 URL（适用于 "url" 模式）
-  - 当 IMAGE_UPLOAD_MODE 为 "base64" 时，直接读取图像并返回 Base64 编码字符串
-
-【更新说明】
-  - 新增 config 参数 IMAGE_UPLOAD_MODE 用于切换 "url" 和 "base64" 上传方式。
-  - 改进 robust_request 函数，捕获 requests.exceptions.RequestException，从而在连接重置等错误时进行重试。
+定义 HuggingFaceUploader 类，用于将本地图像上传至 Hugging Face 仓库，或直接返回 Base64 编码。
+支持：
+  - "url" 模式：上传图像后返回远程 URL，支持批量提交和重复检查
+  - "base64" 模式：直接读取并返回 Base64 编码字符串
+本模块使用 utils.py 中的通用重试函数，保证异常情况能自动退避重试。
 """
 
 import os
 import time
 import requests
 import base64
-from typing import Dict, List, Optional
+from typing import Dict, List
 from huggingface_hub import HfApi, CommitOperationAdd
 from config import HF_TOKEN, HF_REPO_ID, HF_REPO_TYPE, BATCH_COMMIT_SIZE, SLEEP_BETWEEN_COMMITS, CHECK_EXISTS_BEFORE_UPLOAD, IMAGE_UPLOAD_MODE
+from utils import robust_request, log
 
 class HuggingFaceUploader:
     def __init__(self,
@@ -34,13 +28,8 @@ class HuggingFaceUploader:
                  sleep_between_commits: int = SLEEP_BETWEEN_COMMITS,
                  check_exists_before_upload: bool = CHECK_EXISTS_BEFORE_UPLOAD):
         """
-        初始化 HuggingFaceUploader 实例
-        :param hf_token: Hugging Face 的访问令牌
-        :param repo_id: 目标仓库ID，格式 "用户名/仓库名"
-        :param repo_type: 仓库类型，如 "dataset" 或其他类型
-        :param batch_commit_size: 达到该数量后进行一次批量提交（适用于 "url" 模式）
-        :param sleep_between_commits: 每次提交后休眠的秒数（适用于 "url" 模式）
-        :param check_exists_before_upload: 是否上传前检查远端是否已有同名文件（适用于 "url" 模式）
+        初始化 HuggingFaceUploader 并设置上传模式 (url / base64)。
+        如果是 url 模式，且配置了 check_exists_before_upload，则会预先载入仓库文件列表用于去重。
         """
         self.hf_token = hf_token
         self.repo_id = repo_id
@@ -48,23 +37,21 @@ class HuggingFaceUploader:
         self.batch_commit_size = batch_commit_size
         self.sleep_between_commits = sleep_between_commits
         self.check_exists_before_upload = check_exists_before_upload
-        self.upload_mode = IMAGE_UPLOAD_MODE.lower()  # "url" 或 "base64"
+        self.upload_mode = IMAGE_UPLOAD_MODE.lower()
 
         self.api = HfApi()
-        self.operations_buffer: List[CommitOperationAdd] = []  # 仅适用于 "url" 模式
-        self.local_paths_buffer: List[str] = []                # 仅适用于 "url" 模式
-        self.upload_cache: Dict[str, str] = {}  # 缓存：本地路径 -> 上传数据（URL 或 Base64 字符串）
-
+        self.operations_buffer: List[CommitOperationAdd] = []
+        self.local_paths_buffer: List[str] = []
+        self.upload_cache: Dict[str, str] = {}  # 映射：本地路径 -> 远程 URL / Base64
         self.commit_counter = 0
+        self.repo_files_set = None
 
         if self.upload_mode == "url" and self.check_exists_before_upload:
             self._load_repo_file_list()
 
     def _load_repo_file_list(self):
-        """
-        从 Hugging Face 仓库加载所有文件列表（仅适用于 "url" 模式）
-        """
-        print(f"[HFUploader] 正在加载仓库 {self.repo_id} 文件列表……")
+        """预加载仓库文件列表，用于去重判断。"""
+        log(f"[HFUploader] 正在加载仓库 {self.repo_id} 的文件列表……")
         try:
             all_files = self.api.list_repo_files(
                 repo_id=self.repo_id,
@@ -72,17 +59,13 @@ class HuggingFaceUploader:
                 token=self.hf_token
             )
             self.repo_files_set = set(all_files)
-            print(f"[HFUploader] 仓库中已存在 {len(self.repo_files_set)} 个文件。")
+            log(f"[HFUploader] 仓库中已有文件数：{len(self.repo_files_set)}")
         except Exception as e:
-            print(f"[HFUploader] 加载仓库文件列表失败: {e}")
+            log(f"[HFUploader] 加载仓库文件列表失败：{e}")
             self.repo_files_set = set()
 
     def _build_hf_url(self, path_in_repo: str) -> str:
-        """
-        根据仓库类型构造正确的图像访问链接（仅适用于 "url" 模式）
-        :param path_in_repo: 文件在仓库内的路径
-        :return: 构造后的远程访问 URL
-        """
+        """构造文件在 Hugging Face 仓库中的访问 URL。"""
         if self.repo_type.lower() == "dataset":
             return f"https://huggingface.co/datasets/{self.repo_id}/resolve/main/{path_in_repo}"
         else:
@@ -90,88 +73,34 @@ class HuggingFaceUploader:
 
     def _encode_image_base64(self, local_path: str) -> str:
         """
-        读取本地图像文件，并返回 Base64 编码后的字符串，包含适当的 MIME 前缀
-        :param local_path: 本地图像文件路径
-        :return: 格式为 "data:image/jpeg;base64,..." 或相应 MIME 类型的字符串
+        对图像文件进行 Base64 编码，返回 data URI 格式的字符串。
+        根据扩展名自动判断 MIME 类型。
         """
         ext = os.path.splitext(local_path)[1].lower()
-        if ext in [".png"]:
+        if ext == ".png":
             mime = "image/png"
-        elif ext in [".gif"]:
+        elif ext == ".gif":
             mime = "image/gif"
-        elif ext in [".webp"]:
+        elif ext == ".webp":
             mime = "image/webp"
         else:
             mime = "image/jpeg"
-        try:
-            with open(local_path, "rb") as f:
-                img_bytes = f.read()
-            encoded = base64.b64encode(img_bytes).decode("utf-8")
-            return f"data:{mime};base64,{encoded}"
-        except Exception as e:
-            raise RuntimeError(f"[HFUploader] Base64 编码失败：{e}")
-
-    def robust_request(self, func, max_retries=99999, backoff=3, *args, **kwargs):
-        """
-        通用重试机制：捕获所有 requests.exceptions.RequestException（包括 HTTPError、ConnectionError、ProtocolError 等），
-        遇到限流（429）则指数退避，遇到余额不足（402）则抛出自定义异常，其他异常同样重试。
-        :param func: 要执行的请求函数
-        :param max_retries: 最大重试次数
-        :param backoff: 初始退避秒数
-        :return: 请求成功的返回结果
-        """
-        for attempt in range(max_retries):
-            try:
-                return func(*args, **kwargs)
-            except requests.exceptions.RequestException as e:
-                # 如果异常中包含响应对象，则尝试获取 status code
-                if hasattr(e, 'response') and e.response is not None:
-                    status = e.response.status_code
-                    if status == 429:
-                        print(f"[robust_request] {e} - 遇到限流（429），等待 {backoff}s（重试 {attempt+1} 次）")
-                        time.sleep(backoff)
-                        backoff *= 2
-                        continue
-                    elif status == 402:
-                        print(f"[robust_request] {e} - 检测到 HTTP 402（余额不足）")
-                        raise Exception("InsufficientBalanceError: " + str(e))
-                    else:
-                        try:
-                            err_json = e.response.json()
-                            if "error" in err_json:
-                                msg = err_json["error"].get("message", "").lower()
-                                if "insufficient_quota" in msg or "payment" in msg:
-                                    print(f"[robust_request] 检测到不足额度错误")
-                                    raise Exception("InsufficientBalanceError: " + msg)
-                        except Exception:
-                            pass
-                else:
-                    # 没有响应对象，如 ConnectionError、ProtocolError 等
-                    print(f"[robust_request] 请求异常：{e}，等待 {backoff}s 后重试（重试 {attempt+1} 次）")
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            except Exception as e:
-                print(f"[robust_request] 请求失败（非 RequestException）：{e}")
-                raise
-        raise RuntimeError("[robust_request] 超过最大重试次数，依然失败。")
+        with open(local_path, "rb") as f:
+            img_bytes = f.read()
+        encoded = base64.b64encode(img_bytes).decode("utf-8")
+        return f"data:{mime};base64,{encoded}"
 
     def _flush_commit(self, env_name: str):
         """
-        将缓存中的上传操作一次性提交到 Hugging Face 仓库（仅适用于 "url" 模式）。
-        当遇到限流（429）等错误时采用指数退避重试。
-        :param env_name: 当前环境名称，用于构造提交日志信息
+        将缓存中的提交操作一次性提交至 Hugging Face 仓库，
+        并更新上传缓存与仓库文件列表。
         """
         if not self.operations_buffer:
             return
-
         commit_msg = f"[Auto Commit] 提交 {len(self.operations_buffer)} 张图片，来源：{env_name}"
-        max_retries = 99999
-        backoff = 3
-
-        for attempt in range(max_retries):
+        for attempt in range(50):
             try:
-                print(f"[HFUploader][{env_name}] 正在提交 {len(self.operations_buffer)} 张图片（重试 {attempt+1} 次）")
+                log(f"[HFUploader][{env_name}] 正在提交 {len(self.operations_buffer)} 张图片（第 {attempt+1} 次尝试）")
                 self.api.create_commit(
                     repo_id=self.repo_id,
                     repo_type=self.repo_type,
@@ -188,13 +117,8 @@ class HuggingFaceUploader:
                         self.repo_files_set.add(path_in_repo)
                 break
             except requests.exceptions.RequestException as e:
-                if hasattr(e, 'response') and e.response is not None and e.response.status_code == 429:
-                    print(f"[HFUploader][{env_name}] 限流（429），等待 {backoff}s 后重试……")
-                else:
-                    print(f"[HFUploader][{env_name}] 提交异常：{e}，等待 {backoff}s 后重试……")
-                time.sleep(backoff)
-                backoff *= 2
-                continue
+                log(f"[HFUploader][{env_name}] 提交异常：{e}，等待重试……")
+                time.sleep(3 * (2 ** attempt))
         else:
             raise RuntimeError(f"[HFUploader][{env_name}] 超过最大重试次数，无法提交图片。")
 
@@ -206,15 +130,8 @@ class HuggingFaceUploader:
 
     def upload_image(self, env_name: str, local_path: str) -> str:
         """
-        将指定本地图像上传，并返回图像的访问数据。
-        根据 IMAGE_UPLOAD_MODE 选择上传方式：
-          - "base64" 模式：直接返回 Base64 编码字符串
-          - "url" 模式：通过仓库上传后返回 URL
-        同时使用缓存避免重复上传。
-
-        :param env_name: 当前环境名称
-        :param local_path: 本地图像完整路径
-        :return: 图像访问数据（URL 或 Base64 字符串）
+        上传图像并返回其远程 URL 或 Base64 编码。
+        如果文件已上传则直接返回缓存结果。
         """
         if local_path in self.upload_cache:
             return self.upload_cache[local_path]
@@ -222,25 +139,24 @@ class HuggingFaceUploader:
         if not os.path.isfile(local_path):
             raise FileNotFoundError(f"[HFUploader][{env_name}] 文件不存在：{local_path}")
 
+        # 如果是 base64 模式，直接读取并返回编码
         if self.upload_mode == "base64":
-            try:
-                encoded = self._encode_image_base64(local_path)
-                self.upload_cache[local_path] = encoded
-                print(f"[HFUploader][{env_name}] Base64 编码成功：{local_path}")
-                return encoded
-            except Exception as e:
-                raise RuntimeError(f"[HFUploader][{env_name}] Base64 编码失败：{e}")
+            encoded = self._encode_image_base64(local_path)
+            self.upload_cache[local_path] = encoded
+            log(f"[HFUploader][{env_name}] Base64 编码成功：{local_path}")
+            return encoded
 
-        # "url" 模式下，采用仓库上传流程
+        # 否则使用 url 模式，先检查是否已存在
         fname = os.path.basename(local_path)
         path_in_repo = f"images/{env_name}/{fname}"
         if self.check_exists_before_upload and self.repo_files_set is not None:
             if path_in_repo in self.repo_files_set:
                 cached_url = self._build_hf_url(path_in_repo)
                 self.upload_cache[local_path] = cached_url
-                print(f"[HFUploader][{env_name}] 文件 {fname} 已存在于仓库中，跳过上传。")
+                log(f"[HFUploader][{env_name}] 文件已存在，跳过上传：{fname}")
                 return cached_url
 
+        # 缓存提交操作，批量提交
         op = CommitOperationAdd(path_in_repo=path_in_repo, path_or_fileobj=local_path)
         self.operations_buffer.append(op)
         self.local_paths_buffer.append(local_path)
@@ -249,9 +165,6 @@ class HuggingFaceUploader:
         return self._build_hf_url(path_in_repo)
 
     def finalize(self, env_name: str):
-        """
-        强制提交所有缓冲中的上传操作（仅适用于 "url" 模式），确保所有图像均已上传。
-        :param env_name: 当前环境名称
-        """
+        """强制将剩余缓存中的图像提交至仓库（仅适用于 url 模式）"""
         if self.upload_mode == "url":
             self._flush_commit(env_name)

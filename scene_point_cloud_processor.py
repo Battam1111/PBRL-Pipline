@@ -30,7 +30,7 @@ class ScenePointCloudExtractor:
         self.task_related_body_names = task_related_body_names if task_related_body_names else []
         self.num_points = num_points
         # 用于无限制点云的密集采样因子，可以根据需要调整
-        self.dense_factor = 10.0  
+        self.dense_factor = 30.0  
         if random_seed is not None:
             np.random.seed(random_seed)
 

@@ -627,10 +627,10 @@ def main(cfg):
     # 手动设置参数
     
     # 设置环境名称
-    cfg.env = 'metaworld_soccer-v2'  # 使用元世界足球环境
+    # cfg.env = 'metaworld_soccer-v2'  # 使用元世界足球环境
     # cfg.env = 'metaworld_drawer-open-v2' # 使用元世界抽屉打开环境
     # cfg.env = 'metaworld_door-open-v2'  # 使用元世界开门环境
-    # cfg.env = 'metaworld_peg-insert-side-v2' # 使用元世界插销环境
+    cfg.env = 'metaworld_peg-insert-side-v2' # 使用元世界插销环境
     # cfg.env = 'metaworld_disassemble-v2' # 使用元世界拆卸环境
     # cfg.env = 'metaworld_handle-pull-side-v2' # 使用元世界拉手环境
 
@@ -661,9 +661,9 @@ def main(cfg):
     cfg.teacher_eps_mistake = 0  # 教师错误的概率
     cfg.reward_update = 5  # 奖励模型更新频率
 
-    # cfg.num_interact = 4000  # 与环境交互的总步数
+    cfg.num_interact = 4000  # 与环境交互的总步数
 
-    cfg.num_interact = 1000  # 缩小与环境交互的步数
+    # cfg.num_interact = 1000  # 缩小与环境交互的步数
     cfg.max_feedback = 20000  # 最大用户反馈次数
     cfg.reward_lr = 1e-4  # 奖励模型的学习率
 
@@ -674,12 +674,12 @@ def main(cfg):
     cfg.activation = 'tanh'  # 使用tanh作为激活函数
     
     # 无监督学习和总训练步数
-    # cfg.num_unsup_steps = 9000  # 无监督学习步数
-    # cfg.num_train_steps = 100000  # 总训练步数
+    cfg.num_unsup_steps = 9000  # 无监督学习步数
+    cfg.num_train_steps = 100000  # 总训练步数
     
     # 强化学习训练的批量大小
-    # cfg.agent.params.batch_size = 512  
-    cfg.agent.params.batch_size = 128  # 缩小为128
+    cfg.agent.params.batch_size = 512  
+    # cfg.agent.params.batch_size = 128  # 缩小为128
     
     # 值函数网络的结构配置
     cfg.double_q_critic.params.hidden_dim = 256  # 隐藏层维度

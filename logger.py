@@ -87,13 +87,37 @@ class MetersGroup(object):
         return data
 
     def _dump_to_csv(self, data):
-        if self._csv_writer is None:
-            self._csv_writer = csv.DictWriter(self._csv_file,
-                                              fieldnames=sorted(data.keys()),
-                                              restval=0.0)
+        # 检查是否有新的字段
+        new_fields = set(data.keys()) - set(self._csv_writer.fieldnames) if self._csv_writer else set(data.keys())
+
+        # 如果有新字段，需要重新初始化 CSV
+        if new_fields:
+            print(f"Logger Warning: Adding new fields to CSV: {new_fields}")
+            self._csv_file.close()  # 关闭旧的文件
+
+            # 重新打开文件，读取旧数据
+            old_rows = []
+            if os.path.exists(self._csv_file_name):
+                with open(self._csv_file_name, 'r') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    old_rows = list(reader)  # 读取旧数据
+
+            # 重新定义 fieldnames
+            fieldnames = sorted(set(data.keys()) | set(self._csv_writer.fieldnames) if self._csv_writer else set(data.keys()))
+
+            # 重新打开 CSV 进行写入
+            self._csv_file = open(self._csv_file_name, 'w', newline='')
+            self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=fieldnames)
             self._csv_writer.writeheader()
+
+            # 重新写入旧数据
+            for row in old_rows:
+                self._csv_writer.writerow(row)
+
+        # 记录当前数据
         self._csv_writer.writerow(data)
         self._csv_file.flush()
+
 
     def _format(self, key, value, ty):
         if ty == 'int':

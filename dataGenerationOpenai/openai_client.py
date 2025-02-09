@@ -3,193 +3,174 @@
 """
 openai_client.py
 
-本模块整合了直连（Direct）与批处理（Batch）两种 OpenAI API 调用管理，提供以下功能：
-  1. DirectOpenAIHandler：直接调用 OpenAI ChatCompletion 接口，内置重试及余额检测机制
-  2. DirectOpenAIManager：管理多个 DirectOpenAIHandler，通过多线程并发调用直连接口
-  3. OpenAIBatchHandler：与单个 OpenAI Batch API Key 交互，包括上传任务文件、创建批任务、轮询状态及下载结果
-  4. MultiOpenAIBatchManager：管理多个 OpenAIBatchHandler，对每个 JSONL 子文件创建 Job 对象，
-     在整个生命周期中仅创建一次批任务，并持续轮询状态直至完成，避免重复创建批任务
+本模块封装了 OpenAI API 的两种调用模式：
+1. 直接调用模式（Direct）：实时请求，调用 /v1/chat/completions 接口；
+2. 批处理模式（Batch）：适用于大批量异步任务，通过上传任务文件、轮询状态、下载结果完成任务。
 
-所有类均提供详细中文注释，确保代码逻辑清晰、异常处理完备。
+【多 API Key 协同优化说明】：
+- 同时加载多个 API Key，每个 API Key 封装为独立处理器实例；
+- 采用线程安全的轮询调度，确保请求均衡分配，同时对每个 API Key 单独维护预留的 Token 数（单个 API Key 的上限由 ENQUEUED_TOKEN_LIMIT 定义）；
+- 当某个 API Key 因余额不足（HTTP 402）或其他严重异常被禁用时，会自动跳过；
+- 批处理模式中，各关键步骤（文件上传、任务创建、轮询、下载）均采用重试与超时机制，支持断点续传，避免重复处理已完成的任务；
+- 对于任务轮询，当任务状态为“validating”、“running”、“in_progress”、“finalizing”等时，继续等待；若状态为“failed”、“cancelled”、“expired”时则尝试重建批任务；
+- 对于批任务的 token 管理，采用预留／释放机制，并引入 APIKey 健康度管理（失败计数），确保每个 API Key 的累计预留 token 数不超过 ENQUEUED_TOKEN_LIMIT，同时允许偶发失败后重用当前 APIKey（失败次数未超阈值）。
+
+本模块依赖 config.py 中的常量（如 API_URL、BATCH_API_URL、FILES_API_URL、MODEL、SYSTEM_PROMPT、MAX_CONCURRENT_BATCHES、ENQUEUED_TOKEN_LIMIT、CHUNK_SIZE_MAX 等）以及 utils.py 中的 log() 函数。
 """
 
 import os
 import time
 import json
 import threading
-from queue import Queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Callable
 import requests
-from config import API_URL, MODEL, SYSTEM_PROMPT, BATCH_API_URL, FILES_API_URL, MAX_CONCURRENT_BATCHES, ENQUEUED_TOKEN_LIMIT
+from config import API_URL, MODEL, SYSTEM_PROMPT, BATCH_API_URL, FILES_API_URL, MAX_CONCURRENT_BATCHES, ENQUEUED_TOKEN_LIMIT, CHUNK_SIZE_MAX
+from utils import log
 
-# ==============================================================================
-# 1. 直连 OpenAI API 模块
-# ==============================================================================
-
+# =============================================================================
+# 自定义异常：余额不足异常
+# =============================================================================
 class InsufficientBalanceError(Exception):
     """
-    自定义异常，表示当前 API Key 余额不足或配额耗尽
+    当 API Key 余额不足或被禁用时抛出此异常。
     """
     pass
 
-class DirectOpenAIHandler:
-    def __init__(self, api_key: str, key_index: int):
-        """
-        初始化 DirectOpenAIHandler 实例
-        :param api_key: OpenAI API Key
-        :param key_index: Key 编号（仅用于日志标识）
-        """
+# =============================================================================
+# 基础处理类：封装重试机制与日志输出
+# =============================================================================
+class BaseOpenAIHandler:
+    """
+    OpenAI API 请求处理基类。
+    
+    提供统一的重试请求方法，采用指数退避策略，并详细记录日志；
+    当遇到 HTTP 402（余额不足）时，将禁用当前 API Key 并抛出异常。
+    """
+    def __init__(self, api_key: str, key_index: int, max_retries: int = 99999, initial_delay: int = 3):
         self.api_key = api_key
         self.key_index = key_index
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
         self.disabled = False
+        self.max_retries = max_retries
+        self.initial_delay = initial_delay
+        # 默认使用 JSON 请求；对于文件上传后续会自动调整 headers
+        self.headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
     def name_tag(self) -> str:
-        """返回用于日志标识的名称"""
-        return f"DirectKey#{self.key_index}"
+        """返回用于日志输出的 API Key 标识。"""
+        return f"APIKey#{self.key_index}"
 
-    def robust_request(self, func: Callable, max_retries: int = 99999, backoff: int = 3, *args, **kwargs):
+    def robust_request(self, func: Callable, *args, **kwargs):
         """
-        通用重试机制：捕获 requests.exceptions.RequestException（包括 HTTPError、ConnectionError、ProtocolError 等）。
-        遇到限流（429）或连接异常时采用指数退避，直到达到最大重试次数。
-        :param func: 请求函数
-        :param max_retries: 最大重试次数
-        :param backoff: 初始退避秒数
-        :return: 请求成功的返回结果
+        通用请求重试函数：
+          - 出现异常时采用指数退避策略重试；
+          - 针对 HTTP 429（限流）和 HTTP 402（余额不足）分别处理。
+        
+        :param func: 执行请求的函数
+        :return: 请求成功返回的结果
+        :raises RuntimeError: 超过最大重试次数后抛出异常
         """
-        for attempt in range(max_retries):
+        delay = self.initial_delay
+        for attempt in range(1, self.max_retries + 1):
             try:
                 return func(*args, **kwargs)
             except requests.exceptions.RequestException as e:
-                # 尝试获取响应状态码
-                if hasattr(e, 'response') and e.response is not None:
-                    status = e.response.status_code
-                    if status == 429:
-                        print(f"[{self.name_tag()}] 遇到限流（429），等待 {backoff}s（重试 {attempt+1} 次）")
-                        time.sleep(backoff)
-                        backoff *= 2
-                        continue
-                    elif status == 402:
-                        print(f"[{self.name_tag()}] 检测到 HTTP 402（余额不足）")
-                        raise InsufficientBalanceError(str(e))
-                    else:
-                        try:
-                            err_json = e.response.json()
-                            if "error" in err_json:
-                                msg = err_json["error"].get("message", "").lower()
-                                if "insufficient_quota" in msg or "payment" in msg:
-                                    print(f"[{self.name_tag()}] 检测到不足额度错误")
-                                    raise InsufficientBalanceError(msg)
-                        except Exception:
-                            pass
+                status = e.response.status_code if (hasattr(e, 'response') and e.response) else None
+                if status == 429:
+                    log(f"[{self.name_tag()}] HTTP 429 限流，等待 {delay} 秒，重试第 {attempt} 次。")
+                elif status == 402:
+                    log(f"[{self.name_tag()}] HTTP 402 余额不足，禁用该 API Key。")
+                    self.disabled = True
+                    raise InsufficientBalanceError(f"{self.name_tag()} 余额不足：{e}")
                 else:
-                    print(f"[{self.name_tag()}] 请求异常：{e}，等待 {backoff}s 后重试（重试 {attempt+1} 次）")
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            except Exception as e:
-                print(f"[{self.name_tag()}] 请求失败（非 RequestException）：{e}")
-                raise
-        raise RuntimeError(f"[{self.name_tag()}] 超过最大重试次数，依然失败。")
+                    log(f"[{self.name_tag()}] 请求异常：{e}，等待 {delay} 秒，重试第 {attempt} 次。")
+                time.sleep(delay)
+                delay *= 2
+        raise RuntimeError(f"[{self.name_tag()}] 超过最大重试次数 {self.max_retries}，操作失败。")
+
+# =============================================================================
+# 1. 直接调用模式处理器（Direct）
+# =============================================================================
+class DirectOpenAIHandler(BaseOpenAIHandler):
+    """
+    直接调用模式处理器：直接调用 OpenAI /v1/chat/completions 接口获取响应。
+    """
+    def __init__(self, api_key: str, key_index: int):
+        super().__init__(api_key, key_index)
 
     def call_openai_api(self, payload: dict) -> dict:
         """
-        调用 OpenAI /v1/chat/completions 接口，返回响应 JSON
-        :param payload: 请求负载
-        :return: API 响应 JSON
+        调用 OpenAI /v1/chat/completions 接口，并返回响应的 JSON 数据。
+        
+        :param payload: 请求负载（包含 model、messages、max_tokens 等字段）。
+        :return: API 返回的 JSON 数据。
         """
         def do_call():
             if self.disabled:
-                raise InsufficientBalanceError(f"[{self.name_tag()}] Key 已禁用。")
-            resp = requests.post(API_URL, headers=self.headers, json=payload)
-            resp.raise_for_status()
-            return resp.json()
+                raise InsufficientBalanceError(f"{self.name_tag()} 已禁用。")
+            response = requests.post(API_URL, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
         return self.robust_request(do_call)
 
-    def process_pair(self, user_content: str, max_tokens: int = 2000) -> dict:
+    def process_task(self, payload: dict) -> dict:
         """
-        发起一次 ChatCompletion 请求，返回响应结果
-        :param user_content: 用户输入内容
-        :param max_tokens: 最大生成 token 数量
-        :return: API 响应结果 JSON
+        处理单个任务，调用 chat completions 接口。
+        
+        :param payload: 请求负载。
+        :return: API 响应结果（JSON 格式）。
         """
-        payload = {
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content}
-            ],
-            "max_tokens": max_tokens
-        }
         return self.call_openai_api(payload)
 
 class DirectOpenAIManager:
-    def __init__(self, max_workers_per_key: int = 2):
-        """
-        初始化 DirectOpenAIManager 实例，用于并行管理多个 DirectOpenAIHandler
-        :param max_workers_per_key: 每个 API Key 可并发线程数
-        """
+    """
+    直接调用模式管理器，支持多 API Key 并发调用。
+    
+    采用线程安全的轮询调度（Round-Robin）方式，每次请求均均衡使用各 API Key。
+    """
+    def __init__(self, max_workers_per_key: int = 1):
         self.max_workers_per_key = max_workers_per_key
         self.handlers: List[DirectOpenAIHandler] = []
-        self.task_queue = Queue()
         self.results: Dict[str, dict] = {}
+        # 轮询调度相关变量与线程锁
+        self.rr_index = 0
+        self.lock = threading.Lock()
 
     def load_handlers(self, api_keys: List[str]):
         """
-        加载多个 API Key，生成对应的 DirectOpenAIHandler 实例
-        :param api_keys: API Key 列表
+        初始化所有 API Key 处理器实例。
+        
+        :param api_keys: API Key 列表。
         """
-        self.handlers = [DirectOpenAIHandler(key, idx+1) for idx, key in enumerate(api_keys)]
-        print(f"[DirectManager] 加载了 {len(self.handlers)} 个直连处理器。")
+        self.handlers = [DirectOpenAIHandler(key, idx + 1) for idx, key in enumerate(api_keys)]
+        log(f"[DirectOpenAIManager] 成功加载 {len(self.handlers)} 个 API Key 处理器。")
 
-    def add_tasks(self, tasks: List[Dict]):
+    def _select_handler(self) -> Optional[DirectOpenAIHandler]:
         """
-        将任务列表加入内部任务队列，每个任务需包含 custom_id 与 body 信息
-        :param tasks: 任务列表
+        采用轮询调度，从所有处理器中选择一个未禁用的 API Key 处理器。
+        
+        :return: 可用的 DirectOpenAIHandler；若所有处理器均被禁用，则返回 None。
         """
-        for task in tasks:
-            self.task_queue.put(task)
+        with self.lock:
+            n = len(self.handlers)
+            count = 0
+            while count < n:
+                handler = self.handlers[self.rr_index]
+                self.rr_index = (self.rr_index + 1) % n
+                if not handler.disabled:
+                    return handler
+                count += 1
+        return None
 
-    def worker(self, handler: DirectOpenAIHandler):
+    def process_tasks(self, tasks: List[Dict], resume_file: Optional[str] = None) -> Dict[str, dict]:
         """
-        工作线程：不断从任务队列中取任务，通过 handler 调用 API，遇异常则重试
-        :param handler: 当前使用的 DirectOpenAIHandler
+        并发处理所有任务，并支持断点续传，避免重复处理已完成的任务。
+        
+        :param tasks: 任务列表，每个任务包含 custom_id 与 body 字段。
+        :param resume_file: 已完成任务记录文件路径（可选）。
+        :return: custom_id 到 API 响应 JSON 的映射字典。
         """
-        while not self.task_queue.empty() and not handler.disabled:
-            try:
-                task = self.task_queue.get_nowait()
-            except Exception:
-                break
-            custom_id = task.get("custom_id")
-            user_content = task["body"]["messages"][-1]["content"]
-            max_tokens = task["body"].get("max_tokens", 2000)
-            try:
-                response = handler.process_pair(user_content, max_tokens)
-                self.results[custom_id] = response
-                print(f"[{handler.name_tag()}] 成功处理任务 {custom_id}")
-            except InsufficientBalanceError as ibe:
-                handler.disabled = True
-                print(f"[{handler.name_tag()}] 余额不足，停用该 Key：{ibe}")
-                self.task_queue.put(task)
-                break
-            except Exception as e:
-                print(f"[{handler.name_tag()}] 处理任务 {custom_id} 异常：{e}，稍后重试。")
-                self.task_queue.put(task)
-                time.sleep(5)
-            finally:
-                self.task_queue.task_done()
-
-    def process_tasks(self, tasks: List[Dict], resume_file: str = None) -> Dict[str, dict]:
-        """
-        并行处理所有任务，支持从 resume_file 加载已完成任务避免重复处理
-        :param tasks: 任务列表
-        :param resume_file: 已完成任务记录文件路径（可选）
-        :return: 处理结果字典：custom_id -> API 响应 JSON
-        """
-        skip_ids = set()
+        completed_ids = set()
         if resume_file and os.path.isfile(resume_file):
             with open(resume_file, "r", encoding="utf-8") as rf:
                 for line in rf:
@@ -198,374 +179,491 @@ class DirectOpenAIManager:
                         cid = obj.get("custom_id")
                         if cid:
                             self.results[cid] = obj.get("response", {})
-                            skip_ids.add(cid)
-                    except Exception:
-                        pass
-            print(f"[DirectManager] 从 {resume_file} 加载 {len(skip_ids)} 条已完成任务。")
-        pending_tasks = [t for t in tasks if t.get("custom_id") not in skip_ids]
-        print(f"[DirectManager] 总任务数：{len(tasks)}，跳过：{len(skip_ids)}，待处理：{len(pending_tasks)}")
-        self.add_tasks(pending_tasks)
-        threads = []
-        for handler in self.handlers:
-            for _ in range(self.max_workers_per_key):
-                t = threading.Thread(target=self.worker, args=(handler,))
-                t.start()
-                threads.append(t)
-        for t in threads:
-            t.join()
-        print("[DirectManager] 所有任务处理完成。")
+                            completed_ids.add(cid)
+                    except Exception as e:
+                        log(f"[DirectOpenAIManager] 读取断点文件异常：{e}")
+            log(f"[DirectOpenAIManager] 断点续传：已完成 {len(completed_ids)} 个任务。")
+        
+        pending_tasks = [task for task in tasks if task.get("custom_id") not in completed_ids]
+        log(f"[DirectOpenAIManager] 总任务数：{len(tasks)}，待处理任务：{len(pending_tasks)}。")
+        
+        total_workers = len(self.handlers) * self.max_workers_per_key
+        with ThreadPoolExecutor(max_workers=total_workers) as executor:
+            future_to_cid = {}
+            for task in pending_tasks:
+                future = executor.submit(self._process_single_task, task)
+                future_to_cid[future] = task.get("custom_id")
+            for future in as_completed(future_to_cid):
+                cid = future_to_cid[future]
+                try:
+                    result = future.result()
+                    self.results[cid] = result
+                    log(f"[DirectOpenAIManager] 任务 {cid} 成功处理。")
+                except Exception as e:
+                    log(f"[DirectOpenAIManager] 任务 {cid} 处理失败：{e}")
+        log("[DirectOpenAIManager] 所有任务处理完成。")
         return self.results
 
-# ==============================================================================
-# 2. 批处理 OpenAI API 模块
-# ==============================================================================
-
-class OpenAIBatchHandler:
-    def __init__(self, api_key: str, key_index: int):
+    def _process_single_task(self, task: Dict) -> dict:
         """
-        初始化 OpenAIBatchHandler 实例
-        :param api_key: OpenAI API Key
-        :param key_index: Key 编号，用于日志标识
+        处理单个任务，自动选择可用 API Key 并重试直至成功。
+        
+        :param task: 单个任务数据（包含 custom_id 和 body）。
+        :return: API 响应结果（JSON 格式）。
+        :raises RuntimeError: 若所有 API Key 均不可用，则抛出异常。
         """
-        self.api_key = api_key
-        self.key_index = key_index
-        self.headers = {"Authorization": f"Bearer {self.api_key}"}
-        self.disabled = False
-
-    def name_tag(self) -> str:
-        return f"BatchKey#{self.key_index}"
-
-    def robust_request(self, func: Callable, *args, max_retries: int = 99999, **kwargs):
-        """
-        通用请求重试函数：捕获 requests.exceptions.RequestException（包括连接重置等错误），
-        遇到限流（429）时采用指数退避，直到达到最大重试次数。
-        :param func: 请求函数
-        :return: 请求返回结果
-        """
-        backoff = 3
-        for attempt in range(max_retries):
+        payload = task["body"]
+        while True:
+            handler = self._select_handler()
+            if handler is None:
+                raise RuntimeError("无可用 API Key 处理器，任务无法继续处理。")
             try:
-                return func(*args, **kwargs)
-            except requests.exceptions.RequestException as e:
-                if hasattr(e, 'response') and e.response is not None:
-                    status = e.response.status_code
-                    if status == 429:
-                        print(f"[{self.name_tag()}] 遇到限流（429），等待 {backoff}s（重试 {attempt+1} 次）")
-                        time.sleep(backoff)
-                        backoff *= 2
-                        continue
-                    elif status == 402:
-                        print(f"[{self.name_tag()}] 检测到 HTTP 402（余额不足）")
-                        raise InsufficientBalanceError(str(e))
-                    else:
-                        try:
-                            err_json = e.response.json()
-                            if "error" in err_json:
-                                msg = err_json["error"].get("message", "").lower()
-                                if "insufficient_quota" in msg or "payment" in msg:
-                                    print(f"[{self.name_tag()}] 检测到不足额度错误")
-                                    raise InsufficientBalanceError(msg)
-                        except Exception:
-                            pass
-                else:
-                    print(f"[{self.name_tag()}] 请求异常：{e}，等待 {backoff}s 后重试（重试 {attempt+1} 次）")
-                time.sleep(backoff)
-                backoff *= 2
+                return handler.process_task(payload)
+            except InsufficientBalanceError as ibe:
+                log(f"[DirectOpenAIManager] {handler.name_tag()} 已失效，切换到其他 API Key。")
                 continue
             except Exception as e:
-                print(f"[{self.name_tag()}] 请求失败（非 RequestException）：{e}")
-                raise
-        raise RuntimeError(f"[{self.name_tag()}] 超过最大重试次数，操作失败。")
+                log(f"[DirectOpenAIManager] 任务 {task.get('custom_id')} 在 {handler.name_tag()} 上异常：{e}，稍后重试...")
+                time.sleep(2)
+                continue
+
+# =============================================================================
+# 2. 批处理模式处理器（Batch）
+# =============================================================================
+class OpenAIBatchHandler(BaseOpenAIHandler):
+    """
+    批处理模式处理器：用于批量任务的文件上传、批任务创建、状态查询和结果下载。
+    
+    注意：
+      - 文件上传时不指定 Content-Type，由 requests 自动处理 multipart/form-data；
+      - 轮询查询中，当任务状态为 completed 且返回 output_file_id 时，立即下载结果文件；
+      - 若任务状态为 "failed"、"cancelled" 或 "expired" 时，需重建批任务；
+      - 对于状态为 "validating"、"running"、"in_progress"、"finalizing" 等状态，继续等待。
+    """
+    def __init__(self, api_key: str, key_index: int):
+        super().__init__(api_key, key_index)
+        # 文件上传接口不指定 Content-Type
+        self.headers = {"Authorization": f"Bearer {self.api_key}"}
 
     def upload_batch_file(self, file_path: str) -> str:
         """
-        上传 .jsonl 文件到 /v1/files 接口，返回 file_id
-        :param file_path: 本地 JSONL 文件路径
-        :return: 上传后返回的 file_id
+        上传 JSONL 文件到 /v1/files 接口，用于批处理任务。
+        
+        :param file_path: 本地 JSONL 文件路径（必须以 .jsonl 结尾）。
+        :return: 返回上传后获得的 file_id。
         """
         if self.disabled:
-            raise InsufficientBalanceError(f"[{self.name_tag()}] Key 已被禁用。")
+            raise InsufficientBalanceError(f"{self.name_tag()} 已禁用。")
         if not file_path.endswith(".jsonl"):
-            raise ValueError(f"[{self.name_tag()}] 仅支持上传 .jsonl 文件：{file_path}")
-
-        while True:
-            print(f"[{self.name_tag()}] 上传文件：{file_path}")
-            try:
-                def do_upload():
-                    if self.disabled:
-                        raise InsufficientBalanceError(f"[{self.name_tag()}] Key 已禁用。")
-                    with open(file_path, "rb") as f:
-                        r = requests.post(
-                            FILES_API_URL,
-                            headers=self.headers,
-                            files={"file": (file_path, f, "application/json")},
-                            data={"purpose": "batch"}
-                        )
-                    r.raise_for_status()
-                    return r.json()["id"]
-                file_id = self.robust_request(do_upload)
-                print(f"[{self.name_tag()}] 上传成功，file_id={file_id}")
-                return file_id
-            except InsufficientBalanceError:
-                raise
-            except Exception as e:
-                print(f"[{self.name_tag()}] 上传异常：{e}，30秒后重试。")
-                time.sleep(30)
+            raise ValueError(f"{self.name_tag()} 仅支持上传 .jsonl 文件。")
+        
+        def do_upload():
+            if self.disabled:
+                raise InsufficientBalanceError(f"{self.name_tag()} 已禁用。")
+            with open(file_path, "rb") as f:
+                response = requests.post(
+                    FILES_API_URL,
+                    headers=self.headers,
+                    files={"file": (os.path.basename(file_path), f, "application/json")},
+                    data={"purpose": "batch"}
+                )
+            response.raise_for_status()
+            result = response.json()
+            if "id" not in result:
+                raise RuntimeError(f"{self.name_tag()} 上传文件未返回 id。")
+            return result["id"]
+        file_id = self.robust_request(do_upload)
+        log(f"[{self.name_tag()}] 成功上传文件，获得 file_id: {file_id}")
+        return file_id
 
     def create_batch(self, file_id: str) -> dict:
         """
-        基于上传的 file_id 创建批任务，返回任务信息
-        :param file_id: 上传文件的 file_id
-        :return: 批任务详细信息字典
+        根据上传的 file_id 创建批处理任务。
+        
+        :param file_id: 文件上传返回的 file_id。
+        :return: 批任务创建成功后返回的任务信息（包含 batch_id）。
         """
         if self.disabled:
-            raise InsufficientBalanceError(f"[{self.name_tag()}] Key 已禁用。")
-        while True:
-            print(f"[{self.name_tag()}] 创建批任务，file_id={file_id}")
-            try:
-                def do_create():
-                    payload = {
-                        "input_file_id": file_id,
-                        "endpoint": "/v1/chat/completions",
-                        "completion_window": "24h"
-                    }
-                    r = requests.post(BATCH_API_URL, headers=self.headers, json=payload)
-                    r.raise_for_status()
-                    return r.json()
-                batch_info = self.robust_request(do_create)
-                print(f"[{self.name_tag()}] 批任务创建成功，batch_id={batch_info.get('id')}")
-                return batch_info
-            except InsufficientBalanceError:
-                raise
-            except Exception as ex:
-                print(f"[{self.name_tag()}] create_batch 异常：{ex}，30秒后重试。")
-                time.sleep(30)
+            raise InsufficientBalanceError(f"{self.name_tag()} 已禁用。")
+        def do_create():
+            payload = {
+                "input_file_id": file_id,
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "24h"
+            }
+            response = requests.post(BATCH_API_URL, headers=self.headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            if "id" not in result:
+                raise RuntimeError(f"{self.name_tag()} 批任务创建失败，无 batch_id。")
+            return result
+        batch_info = self.robust_request(do_create)
+        log(f"[{self.name_tag()}] 批任务创建成功，batch_id: {batch_info.get('id')}")
+        return batch_info
 
     def check_batch_status(self, batch_id: str) -> dict:
         """
-        查询批任务状态，返回状态信息字典
-        :param batch_id: 批任务 ID
-        :return: 状态信息字典
+        查询批任务状态信息。
+        
+        :param batch_id: 批任务 ID。
+        :return: 返回任务状态信息的字典。
         """
         if self.disabled:
-            raise InsufficientBalanceError(f"[{self.name_tag()}] Key 已禁用。")
-        while True:
-            try:
-                def do_check():
-                    url = f"{BATCH_API_URL}/{batch_id}"
-                    r = requests.get(url, headers=self.headers)
-                    r.raise_for_status()
-                    return r.json()
-                return self.robust_request(do_check)
-            except InsufficientBalanceError:
-                raise
-            except Exception as e:
-                print(f"[{self.name_tag()}] check_batch_status 异常：{e}，30秒后重试。")
-                time.sleep(30)
-
-    def list_batches(self) -> List[dict]:
-        """
-        查询当前 Key 下的所有批任务，用于监控队列占用
-        :return: 批任务列表
-        """
-        if self.disabled:
-            raise InsufficientBalanceError(f"[{self.name_tag()}] Key 已禁用。")
-        while True:
-            try:
-                def do_list():
-                    r = requests.get(BATCH_API_URL, headers=self.headers)
-                    r.raise_for_status()
-                    return r.json()["data"]
-                return self.robust_request(do_list)
-            except InsufficientBalanceError:
-                raise
-            except Exception as e:
-                print(f"[{self.name_tag()}] list_batches 异常：{e}，30秒后重试。")
-                time.sleep(30)
+            raise InsufficientBalanceError(f"{self.name_tag()} 已禁用。")
+        def do_check():
+            url = f"{BATCH_API_URL}/{batch_id}"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        status_info = self.robust_request(do_check)
+        log(f"[{self.name_tag()}] 批任务 {batch_id} 状态查询结果: {status_info.get('status')}")
+        return status_info
 
     def download_batch_results(self, output_file_id: str, save_path: str):
         """
-        下载批任务结果文件到本地指定路径
-        :param output_file_id: 结果文件的 file_id
-        :param save_path: 保存结果文件的本地路径
+        下载批任务结果文件，并保存到指定本地路径。
+        
+        :param output_file_id: 结果文件的 file_id。
+        :param save_path: 结果文件的保存路径。
         """
         if self.disabled:
-            raise InsufficientBalanceError(f"[{self.name_tag()}] Key 已禁用。")
-        while True:
-            try:
-                print(f"[{self.name_tag()}] 正在下载结果文件（output_file_id={output_file_id}）到 {save_path}")
-                def do_download():
-                    url = f"{FILES_API_URL}/{output_file_id}/content"
-                    r = requests.get(url, headers=self.headers)
-                    r.raise_for_status()
-                    return r.text
-                content = self.robust_request(do_download)
-                with open(save_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-                print(f"[{self.name_tag()}] 下载成功，文件保存在 {save_path}")
-                return
-            except InsufficientBalanceError:
-                raise
-            except Exception as e:
-                print(f"[{self.name_tag()}] 下载异常：{e}，30秒后重试。")
-                time.sleep(30)
+            raise InsufficientBalanceError(f"{self.name_tag()} 已禁用。")
+        def do_download():
+            url = f"{FILES_API_URL}/{output_file_id}/content"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            return response.text
+        content = self.robust_request(do_download)
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        log(f"[{self.name_tag()}] 成功下载批任务结果，保存至 {save_path}")
 
-    def wait_for_queue_space(self):
-        """
-        检查当前 Key 下活跃批任务及 token 使用情况，若超出限制则等待
-        """
-        if self.disabled:
-            raise InsufficientBalanceError(f"[{self.name_tag()}] Key 已禁用。")
-        while True:
-            batches = self.list_batches()
-            active_batches = [b for b in batches if b.get("status") in ("queued", "running")]
-            total_tokens = sum(b.get("enqueued_tokens", 0) for b in active_batches)
-            print(f"[{self.name_tag()}] 当前活跃批任务数：{len(active_batches)}，token 总数：{total_tokens}")
-            if len(active_batches) >= MAX_CONCURRENT_BATCHES or total_tokens >= ENQUEUED_TOKEN_LIMIT:
-                print(f"[{self.name_tag()}] 队列资源紧张，等待 30秒……")
-                time.sleep(30)
-            else:
-                break
+# =============================================================================
+# 3. 批处理模式管理器（MultiOpenAIBatchManager）
+# =============================================================================
+# 定义 APIKey 在批任务重建过程中允许的最大连续失败次数（低于此阈值时允许重用当前 APIKey）
+MAX_KEY_FAILURE_THRESHOLD = 99999
 
-# ------------------------------------------------------------------------------
-# MultiOpenAIBatchManager（重构版）
-# ------------------------------------------------------------------------------
 class MultiOpenAIBatchManager:
     """
-    MultiOpenAIBatchManager 用于多 Key 并行处理多个 JSONL 子文件（chunk），
-    针对每个 chunk 文件创建一个 Job 对象，在整个生命周期内仅创建一次批任务，
-    并持续轮询任务状态直至完成，避免重复创建批任务。
-    
-    设计思路：
-      1. 对每个 chunk 文件构造 Job 对象，记录文件路径、输出路径、分配的 handler、批任务 ID、状态及重试次数；
-      2. Job 状态包括： "pending"（待处理）、"running"（任务运行中）、"completed"（任务完成）及 "failed"（任务失败）；
-      3. 主流程不断检查各 Job 状态，对 "pending" 状态分配 handler 并创建批任务，对 "running" 状态轮询状态，
-         若批任务完成则下载结果；如状态异常则进行重试，直至达到最大重试次数后标记为失败；
-      4. 最终返回字典，键为 chunk 文件路径，值为对应输出结果文件路径。
+    批处理模式管理器：负责管理多个 JSONL 子文件（chunk）的批任务处理，
+    主要功能包括：
+      1. 分块任务初始化（支持断点续传）；
+      2. 采用线程池控制同时运行的批任务数量（由 MAX_CONCURRENT_BATCHES 限制）；
+      3. 支持 API Key 间的轮询调度，同时对每个 API Key 维护累计预留的 token 数，
+         确保单个 API Key 的预留 token 数不超过 ENQUEUED_TOKEN_LIMIT；
+      4. 对每个子文件任务，进行文件上传、批任务创建、状态轮询，直至任务完成或失败；
+      5. 当任务状态为异常（failed、cancelled、expired）时，自动尝试重新分配 API Key 并重建批任务；
+         如果只有一个 API Key，则允许重用该 API Key；若多个 API Key可用，则在当前 API Key 的连续失败次数超过
+         MAX_KEY_FAILURE_THRESHOLD 时，优先选择其他 API Key重建任务。
+      6. 最终返回各子文件对应的结果文件列表，支持断点续传。
     """
-    def __init__(self,
-                 max_tasks_per_key: int = 2,
-                 max_failures_per_job: int = 99999,
-                 poll_interval: int = 10,
-                 resume_map: Optional[Dict[str, str]] = None):
+    def __init__(self, max_failures_per_job: int = 99999, poll_interval: int = 10, resume_map: Optional[Dict[str, str]] = None):
         """
-        初始化 MultiOpenAIBatchManager 实例
-        :param max_tasks_per_key: 每个 Key 同时处理任务数
-        :param max_failures_per_job: 单个 Job 允许的最大重试次数
-        :param poll_interval: 轮询间隔（秒）
-        :param resume_map: 已完成 chunk 文件与输出文件的映射（用于断点续跑）
+        :param max_failures_per_job: 单个任务允许的最大失败次数。
+        :param poll_interval: 每次轮询间隔（秒）。
+        :param resume_map: 已完成任务映射，格式为 {chunk_file: output_file}，用于断点续传。
         """
-        self.max_tasks_per_key = max_tasks_per_key
         self.max_failures_per_job = max_failures_per_job
         self.poll_interval = poll_interval
         self.resume_map = resume_map if resume_map else {}
-        
-        self.jobs: Dict[str, Dict[str, Any]] = {}         # 存储所有 Job 对象，键为 chunk 文件路径
-        self.results_map: Dict[str, str] = {}               # 最终结果映射：chunk 文件 -> 输出文件路径
-        self.handlers: List[OpenAIBatchHandler] = []        # 存储使用的 handler 列表
+        self.handlers: List[OpenAIBatchHandler] = []
+        # 轮询调度相关变量与锁
+        self.rr_index = 0
+        self.lock = threading.Lock()
+        # 记录每个 API Key 当前累计预留的 token 数（键为 handler.name_tag()）
+        self.handler_token_counts: Dict[str, int] = {}
+        # 记录每个 API Key 的连续失败次数（非网络异常，仅针对批任务重建失败）
+        self.api_key_failures: Dict[str, int] = {}
 
     def load_handlers(self, api_keys: List[str]):
         """
-        加载多个 API Key，生成对应的 OpenAIBatchHandler 实例
-        :param api_keys: API Key 列表
-        """
-        from openai_client import OpenAIBatchHandler  # 避免循环依赖
-        self.handlers = [OpenAIBatchHandler(key, idx+1) for idx, key in enumerate(api_keys)]
-        print(f"[MultiBatchManager] 加载了 {len(self.handlers)} 个 Key。")
-
-    def _create_job(self, chunk_file: str, out_dir: str) -> Dict[str, Any]:
-        """
-        根据 chunk 文件构造 Job 对象
-        :param chunk_file: JSONL 子文件路径
-        :param out_dir: 输出目录，用于生成输出文件路径
-        :return: Job 对象，包含 chunk_file、output_file、status、fail_count、handler、batch_id 等信息
-        """
-        base = os.path.splitext(os.path.basename(chunk_file))[0]
-        out_file = os.path.join(out_dir, f"{base}_output.jsonl")
-        job = {
-            "chunk_file": chunk_file,
-            "output_file": out_file,
-            "status": "pending",
-            "fail_count": 0,
-            "handler": None,
-            "batch_id": ""
-        }
-        return job
-
-    def process_chunk_files_official(self, chunk_files: List[str], out_dir: str) -> List[str]:
-        """
-        官方模式下处理所有 chunk 文件，直到全部成功（除非所有 Key 均不可用）
-        :param chunk_files: JSONL 子文件列表
-        :param out_dir: 输出目录
-        :return: 输出结果文件路径列表，顺序与输入 chunk_files 一致
-        """
-        for cf in chunk_files:
-            if cf in self.resume_map:
-                self.results_map[cf] = self.resume_map[cf]
-            else:
-                self.jobs[cf] = self._create_job(cf, out_dir)
+        初始化所有批处理 API Key 处理器实例，并初始化各自的 token 计数和失败计数。
         
-        while any(job["status"] != "completed" for job in self.jobs.values()):
-            for cf, job in self.jobs.items():
-                if job["status"] == "completed":
+        :param api_keys: API Key 列表。
+        """
+        self.handlers = [OpenAIBatchHandler(key, idx + 1) for idx, key in enumerate(api_keys)]
+        for handler in self.handlers:
+            tag = handler.name_tag()
+            self.handler_token_counts[tag] = 0
+            self.api_key_failures[tag] = 0
+        log(f"[MultiOpenAIBatchManager] 成功加载 {len(self.handlers)} 个批处理 API Key 处理器。")
+
+    # ------------------------------
+    # Token 管理相关方法
+    # ------------------------------
+    def reserve_tokens(self, handler: OpenAIBatchHandler, tokens: int) -> bool:
+        """
+        尝试在指定处理器上预留一定数量的 token。
+        
+        :param handler: 指定的批处理处理器。
+        :param tokens: 预留的 token 数。
+        :return: 预留成功返回 True，否则返回 False。
+        """
+        with self.lock:
+            key = handler.name_tag()
+            current = self.handler_token_counts.get(key, 0)
+            if current + tokens <= ENQUEUED_TOKEN_LIMIT:
+                self.handler_token_counts[key] = current + tokens
+                log(f"[MultiOpenAIBatchManager] {key} 预留 token {tokens} 成功，当前累计 token 数为 {self.handler_token_counts[key]}。")
+                return True
+            else:
+                log(f"[MultiOpenAIBatchManager] {key} 无法预留 token {tokens}（当前已预留 {current}，上限 {ENQUEUED_TOKEN_LIMIT}）。")
+                return False
+
+    def release_tokens(self, handler: OpenAIBatchHandler, tokens: int):
+        """
+        在指定处理器上释放预留的 token 数。
+        
+        :param handler: 指定的批处理处理器。
+        :param tokens: 释放的 token 数。
+        """
+        with self.lock:
+            key = handler.name_tag()
+            current = self.handler_token_counts.get(key, 0)
+            new_value = max(0, current - tokens)
+            self.handler_token_counts[key] = new_value
+            log(f"[MultiOpenAIBatchManager] {key} 释放 token {tokens}，当前累计 token 数更新为 {new_value}。")
+
+    def _select_handler(self, job_token: int) -> Optional[OpenAIBatchHandler]:
+        """
+        采用轮询调度，从所有处理器中选择一个未禁用且当前累计预留 token 数加上本任务 token 数不超过 ENQUEUED_TOKEN_LIMIT 的处理器。
+        
+        :param job_token: 当前任务大致的 token 数。
+        :return: 可用的 OpenAIBatchHandler；若所有处理器均不可用则返回 None。
+        """
+        with self.lock:
+            n = len(self.handlers)
+            count = 0
+            while count < n:
+                handler = self.handlers[self.rr_index]
+                self.rr_index = (self.rr_index + 1) % n
+                if handler.disabled:
+                    count += 1
                     continue
-                if job["status"] == "pending":
-                    available = [h for h in self.handlers if not h.disabled]
-                    if not available:
-                        print("[MultiBatchManager] 无可用 Key，等待 10 秒重试……")
-                        time.sleep(10)
-                        continue
-                    job["handler"] = available[0]
+                current_tokens = self.handler_token_counts.get(handler.name_tag(), 0)
+                if current_tokens + job_token <= ENQUEUED_TOKEN_LIMIT:
+                    return handler
+                count += 1
+        return None
+
+    def _approximate_token_count(self, file_path: str) -> int:
+        """
+        近似计算文件的 token 数，粗略按照每 4 个字符计 1 个 token。
+        
+        :param file_path: 文件路径。
+        :return: 近似 token 数。
+        """
+        with open(file_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        return len(text) // 4
+
+    # ------------------------------
+    # 轮询任务状态与重建任务
+    # ------------------------------
+    def _poll_job(self, job: Dict[str, Any]) -> Optional[str]:
+        """
+        轮询单个批任务，直至任务完成、失败或超过最大重试次数／超时。
+        
+        当任务状态为 completed 且返回 output_file_id 时，下载结果文件并返回保存路径；
+        当状态为异常（failed、cancelled、expired）时，尝试重建批任务（重新分配 API Key 并重新提交任务）。
+        如果只有一个 API Key，则允许重用该 API Key；若多个 API Key 可用，则当当前 API Key连续失败次数超过
+        MAX_KEY_FAILURE_THRESHOLD 时，优先选择其他 API Key重建任务。
+        
+        :param job: 任务字典，包含以下字段：
+                    - chunk_file: 子文件路径；
+                    - output_file: 结果文件保存路径；
+                    - fail_count: 当前任务累计失败次数；
+                    - handler: 当前分配的 API Key 处理器；
+                    - batch_id: 当前批任务 ID；
+                    - token_count: 本任务的 token 数。
+        :return: 成功时返回结果文件保存路径，否则返回 None。
+        """
+        fail_count = job.get("fail_count", 0)
+        start_time = time.time()
+        while True:
+            try:
+                status_info = job["handler"].check_batch_status(job["batch_id"])
+                status = status_info.get("status", "").lower()
+                current_time = time.time()
+
+                if status == "completed":
+                    output_file_id = status_info.get("output_file_id", "")
+                    if output_file_id:
+                        # 下载结果文件
+                        job["handler"].download_batch_results(output_file_id, job["output_file"])
+                        log(f"[MultiOpenAIBatchManager] 任务 {job['chunk_file']} 已完成，结果文件: {job['output_file']}")
+                        # 任务结束后释放预留 token，并重置当前 APIKey 的失败计数
+                        self.release_tokens(job["handler"], job["token_count"])
+                        self.api_key_failures[job["handler"].name_tag()] = 0
+                        return job["output_file"]
+                    else:
+                        log(f"[MultiOpenAIBatchManager] 任务 {job['chunk_file']} 状态为 completed，但未返回 output_file_id。")
+                        fail_count += 1
+
+                elif status in ("failed", "cancelled", "expired"):
+                    log(f"[MultiOpenAIBatchManager] 任务 {job['chunk_file']} 状态异常: {status}，准备重建批任务。")
+                    fail_count += 1
+                    # 累计当前 APIKey 对此任务的失败次数
+                    current_key = job["handler"].name_tag()
+                    self.api_key_failures[current_key] += 1
+                    # 若只有一个 APIKey，或当前 APIKey连续失败次数低于阈值，则允许重用当前 APIKey
+                    if len(self.handlers) == 1 or self.api_key_failures[current_key] < MAX_KEY_FAILURE_THRESHOLD:
+                        log(f"[MultiOpenAIBatchManager] 当前 APIKey {current_key} 失败次数 {self.api_key_failures[current_key]} 未超过阈值，尝试重用。")
+                        self.release_tokens(job["handler"], job["token_count"])
+                        if not self.reserve_tokens(job["handler"], job["token_count"]):
+                            log(f"[MultiOpenAIBatchManager] 重新预留当前 APIKey {current_key} token 失败。")
+                            return None
+                        # 继续使用当前 handler
+                    else:
+                        # 多个 APIKey情况下，当当前 APIKey连续失败次数达到阈值时，尝试选择其他 APIKey
+                        log(f"[MultiOpenAIBatchManager] 当前 APIKey {current_key} 失败次数 {self.api_key_failures[current_key]} 达到阈值，尝试选择其他 APIKey。")
+                        candidate = None
+                        for _ in range(3):
+                            cand = self._select_handler(job["token_count"])
+                            if cand and cand.name_tag() != current_key:
+                                # 候选 APIKey使用前尝试预留 token
+                                if self.reserve_tokens(cand, job["token_count"]):
+                                    candidate = cand
+                                    break
+                            time.sleep(self.poll_interval)
+                        if candidate is None:
+                            # 若未找到其他合适 APIKey，则重用当前 APIKey
+                            log(f"[MultiOpenAIBatchManager] 未找到其他 APIKey，重用当前 APIKey {current_key}。")
+                            self.release_tokens(job["handler"], job["token_count"])
+                            if not self.reserve_tokens(job["handler"], job["token_count"]):
+                                return None
+                            candidate = job["handler"]
+                        # 更新 job 使用新的 APIKey，并重置新 APIKey的失败计数（或保留已有值）
+                        job["handler"] = candidate
+
                     try:
-                        fid = job["handler"].upload_batch_file(job["chunk_file"])
-                        batch_info = job["handler"].create_batch(fid)
+                        file_id = job["handler"].upload_batch_file(job["chunk_file"])
+                        batch_info = job["handler"].create_batch(file_id)
                         job["batch_id"] = batch_info.get("id", "")
-                        if not job["batch_id"]:
-                            raise RuntimeError("create_batch 返回空 batch_id")
-                        job["status"] = "running"
-                        print(f"[MultiBatchManager] 对文件 {os.path.basename(cf)} 创建批任务成功，batch_id={job['batch_id']}")
+                        log(f"[MultiOpenAIBatchManager] 任务 {job['chunk_file']} 重建批任务成功，新 batch_id: {job['batch_id']}")
+                        # 重建成功后，将新 APIKey的失败计数重置
+                        self.api_key_failures[job["handler"].name_tag()] = 0
                     except Exception as e:
-                        job["fail_count"] += 1
-                        print(f"[MultiBatchManager] 对文件 {os.path.basename(cf)} 创建批任务失败，重试次数：{job['fail_count']}，错误：{e}")
-                        if job["fail_count"] >= self.max_failures_per_job:
-                            job["status"] = "failed"
-                        else:
-                            time.sleep(10)
+                        fail_count += 1
+                        log(f"[MultiOpenAIBatchManager] 任务 {job['chunk_file']} 重建批任务异常：{e}")
                         continue
-                if job["status"] == "running":
-                    try:
-                        status_info = job["handler"].check_batch_status(job["batch_id"])
-                        st = status_info.get("status", "")
-                        if st == "completed":
-                            output_file_id = status_info.get("output_file_id", "")
-                            if not output_file_id:
-                                raise RuntimeError("completed 状态但无 output_file_id")
-                            job["handler"].download_batch_results(output_file_id, job["output_file"])
-                            job["status"] = "completed"
-                            self.results_map[job["chunk_file"]] = job["output_file"]
-                            print(f"[MultiBatchManager] 文件 {os.path.basename(cf)} 批任务已完成，结果保存至 {job['output_file']}")
-                        elif st in ("queued", "running", "validating", "in_progress", "finalizing", "cancelling"):
-                            print(f"[MultiBatchManager] 文件 {os.path.basename(cf)} 当前状态：{st}，继续等待。")
-                        elif st in ("failed", "cancelled", "expired"):
-                            job["fail_count"] += 1
-                            print(f"[MultiBatchManager] 文件 {os.path.basename(cf)} 批任务状态异常（{st}），累计重试次数：{job['fail_count']}")
-                            if job["fail_count"] >= self.max_failures_per_job:
-                                job["status"] = "failed"
-                                print(f"[MultiBatchManager] 文件 {os.path.basename(cf)} 重试次数过多，标记为失败。")
-                            else:
-                                time.sleep(10)
-                                fid = job["handler"].upload_batch_file(job["chunk_file"])
-                                batch_info = job["handler"].create_batch(fid)
-                                job["batch_id"] = batch_info.get("id", "")
-                                print(f"[MultiBatchManager] 文件 {os.path.basename(cf)} 重新创建批任务成功，新的 batch_id={job['batch_id']}")
-                        else:
-                            print(f"[MultiBatchManager] 文件 {os.path.basename(cf)} 返回未知状态：{st}，等待重试。")
-                    except Exception as e:
-                        job["fail_count"] += 1
-                        print(f"[MultiBatchManager] 文件 {os.path.basename(cf)} 轮询异常：{e}，累计重试次数：{job['fail_count']}")
-                        if job["fail_count"] >= self.max_failures_per_job:
-                            job["status"] = "failed"
-                    time.sleep(self.poll_interval)
-            # 循环结束前再检查所有 Job 状态
-        print("[MultiBatchManager] 所有 chunk 文件均处理完成。")
-        return [self.results_map.get(cf, "") for cf in chunk_files]
+
+                else:
+                    log(f"[MultiOpenAIBatchManager] 任务 {job['chunk_file']} 当前状态: {status}，继续轮询。")
+
+                # 检查是否超过最大失败次数或超时
+                if fail_count >= self.max_failures_per_job or (current_time - start_time) > 3600:
+                    log(f"[MultiOpenAIBatchManager] 任务 {job['chunk_file']} 超过最大失败次数或超时，终止任务。")
+                    self.release_tokens(job["handler"], job["token_count"])
+                    return None
+
+            except Exception as e:
+                fail_count += 1
+                log(f"[MultiOpenAIBatchManager] 任务 {job['chunk_file']} 轮询异常：{e}，累计失败次数: {fail_count}")
+                if fail_count >= self.max_failures_per_job:
+                    self.release_tokens(job["handler"], job["token_count"])
+                    return None
+
+            time.sleep(self.poll_interval)
+
+    def process_chunk_files(self, chunk_files: List[str], out_dir: str) -> List[str]:
+        """
+        处理所有 JSONL 子文件（chunk），为每个文件分配批任务、轮询状态、下载结果文件。
+        支持断点续传，并同时控制：
+          ① 同时最多运行 MAX_CONCURRENT_BATCHES 个批任务；
+          ② 每个 API Key 的累计预留 token 数不超过 ENQUEUED_TOKEN_LIMIT。
+        如果某个 API Key 的 token 数超限，则暂停使用该 API Key 提交新任务，待部分任务完成后再重试。
+        
+        :param chunk_files: JSONL 子文件列表。
+        :param out_dir: 结果文件输出目录。
+        :return: 输出结果文件路径列表，顺序与输入文件顺序一致。
+        """
+        # 初始化任务字典，支持断点续传
+        jobs = {}
+        for cf in chunk_files:
+            if cf in self.resume_map and os.path.isfile(self.resume_map[cf]):
+                # 已完成的任务直接记录输出文件
+                jobs[cf] = {"output": self.resume_map[cf], "token_count": 0}
+            else:
+                base = os.path.splitext(os.path.basename(cf))[0]
+                output_file = os.path.join(out_dir, f"{base}_output.jsonl")
+                token_count = self._approximate_token_count(cf)
+                jobs[cf] = {
+                    "chunk_file": cf,
+                    "output_file": output_file,
+                    "fail_count": 0,
+                    "handler": None,
+                    "batch_id": "",
+                    "token_count": token_count
+                }
+        # 使用线程池控制最大并发批任务数量
+        executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_BATCHES)
+        futures = {}
+        results = {}  # 存放各任务结果，键为 chunk 文件路径
+
+        def submit_job(job_key, job) -> bool:
+            """
+            内部函数：尝试提交单个任务，成功则预留 token 并创建批任务。
+            
+            :param job_key: 任务对应的文件路径。
+            :param job: 任务字典。
+            :return: 提交成功返回 True，否则返回 False。
+            """
+            handler = self._select_handler(job["token_count"])
+            if handler is None:
+                log(f"[MultiOpenAIBatchManager] 任务 {job_key} 无可用 API Key（token 限制），暂不提交。")
+                return False
+            # 预留 token
+            if not self.reserve_tokens(handler, job["token_count"]):
+                log(f"[MultiOpenAIBatchManager] 任务 {job_key} 在 {handler.name_tag()} 预留 token 失败。")
+                return False
+            job["handler"] = handler
+            try:
+                file_id = handler.upload_batch_file(job["chunk_file"])
+                batch_info = handler.create_batch(file_id)
+                job["batch_id"] = batch_info.get("id", "")
+                log(f"[MultiOpenAIBatchManager] 任务 {job_key} 创建批任务成功，batch_id: {job['batch_id']}")
+            except Exception as e:
+                job["fail_count"] += 1
+                log(f"[MultiOpenAIBatchManager] 任务 {job_key} 创建批任务失败：{e}")
+                # 失败时释放预留 token
+                self.release_tokens(handler, job["token_count"])
+                return False
+            futures[executor.submit(self._poll_job, job)] = job_key
+            log(f"[MultiOpenAIBatchManager] 提交任务 {job_key}，token 数 {job['token_count']}。")
+            return True
+
+        pending_keys = list(jobs.keys())
+        idx = 0
+        # 循环提交所有任务，若某任务因 token 限制无法提交则等待部分任务完成后再重试
+        while idx < len(pending_keys):
+            job_key = pending_keys[idx]
+            job = jobs[job_key]
+            if "output" in job:
+                idx += 1
+                continue
+            submitted = submit_job(job_key, job)
+            if submitted:
+                idx += 1
+            else:
+                time.sleep(self.poll_interval)
+        # 等待所有任务完成
+        executor.shutdown(wait=True)
+        # 收集所有任务结果
+        for fut in futures:
+            job_key = futures[fut]
+            try:
+                result = fut.result()
+                results[job_key] = result if result else ""
+            except Exception as e:
+                log(f"[MultiOpenAIBatchManager] 任务 {job_key} 异常：{e}")
+                results[job_key] = ""
+        # 根据输入文件顺序返回结果文件列表
+        output_files = [results.get(cf, jobs.get(cf, {}).get("output", "")) for cf in chunk_files]
+        return output_files
+
+# =============================================================================
+# 本模块导出 DirectOpenAIManager 与 MultiOpenAIBatchManager 两个类，
+# 分别对应直接调用模式与批处理模式，供其它模块调用。
+# =============================================================================
