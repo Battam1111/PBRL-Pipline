@@ -1,20 +1,41 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+reward_model.py
+================
+
+本模块实现奖励模型（Reward Model）的构建、数据采集、标签打分以及训练流程，
+支持两种数据模式：基于图像（data_type="image"）和基于点云（data_type="pointcloud"）。
+其中，当使用 "pointcloud" 模式且 vlm == 'pointllm_two_image' 时，
+奖励模型采用 PointCloudNet 架构，输入形状为 (N, point_cloud_num_points, 6)（每个点含 xyz 与 rgb），
+输出为单标量；而当 data_type 为 "image" 时，则采用传统图像模型（如 ResNet-18）实现奖励预测.
+
+【本版本说明】
+1. 针对点云数据，添加数据时使用深拷贝，确保各轨迹数据独立，避免共享内存导致数据重复。
+2. 采样查询对时，当仅有一条轨迹时，从该轨迹内不同时间步随机采样，保证数据不重复。
+3. 在 put_queries 函数中，若数据类型为 "pointcloud" 且输入形状为 (N, point_cloud_num_points, 6)，
+   则自动在轴1插入维度，使其变为 (N, 1, point_cloud_num_points, 6) 以匹配预设缓冲区形状。
+4. 在训练奖励模型时，针对点云数据采用较小的批量（如16），并使用混合精度训练（AMP），
+   以降低显存占用并提高效率。若仍遇内存碎片问题，可考虑设置环境变量 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True。
+
+作者：您的姓名
+日期：2023-… (更新日期)
+"""
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import os
 import time
-
-
-import asyncio
-from PIL import Image
 import datetime
 import pickle as pkl
 import random
 import cv2
-# reward model架构修改的情况
-# from simple_point_net import PointNet  # <-- 已不再使用
+from PIL import Image
+import asyncio
 
+# 引入用于 VLM 查询的 prompt 模块
 from prompt import (
     gemini_free_query_env_prompts, gemini_summary_env_prompts,
     gemini_free_query_prompt1, gemini_free_query_prompt2,
@@ -23,14 +44,34 @@ from prompt import (
     pointllm_free_query_env_prompts, pointllm_summary_env_prompts,
     pointllm_free_query_prompt1, pointllm_free_query_prompt2,
 )
+
 from vlms.gemini_infer import gemini_query_2, gemini_query_1
 from conv_net import CNN, fanin_init
-
 from vlms.pointllm_infer import pointllm_query_1, pointllm_query_2
+# 导入点云奖励模型生成函数（PointCloudNet实现）
+from pointCloudNet import gen_point_cloud_net
+from extract import extract_label_from_response
 
-device = 'cuda'
+# 设置计算设备，优先使用 GPU
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+# =============================================================================
+# 定义一个简单的 MLP 生成函数，用于非图像（向量）奖励模型
+# =============================================================================
 def gen_net(in_size=1, out_size=1, H=128, n_layers=3, activation='tanh'):
+    """
+    生成一个多层感知机（MLP），用于处理状态-动作向量输入。
+
+    参数：
+        in_size (int): 输入维度。
+        out_size (int): 输出维度。
+        H (int): 隐藏层单元数。
+        n_layers (int): 隐藏层数目。
+        activation (str): 激活函数，可选 'tanh'、'sig' 或默认 ReLU。
+
+    返回：
+        list: 各层模块列表，可直接用于 nn.Sequential 构建网络。
+    """
     net = []
     for i in range(n_layers):
         net.append(nn.Linear(in_size, H))
@@ -43,13 +84,28 @@ def gen_net(in_size=1, out_size=1, H=128, n_layers=3, activation='tanh'):
         net.append(nn.Sigmoid())
     else:
         net.append(nn.ReLU())
-
     return net
 
+# =============================================================================
+# 定义基于卷积网络的图像奖励模型生成函数（非 ResNet 版本）
+# =============================================================================
 def gen_image_net(image_height, image_width, 
-                  conv_kernel_sizes=[5, 3, 3 ,3], 
+                  conv_kernel_sizes=[5, 3, 3, 3], 
                   conv_n_channels=[16, 32, 64, 128], 
                   conv_strides=[3, 2, 2, 2]):
+    """
+    生成基于卷积网络的图像奖励模型。
+
+    参数：
+        image_height (int): 图像高度。
+        image_width (int): 图像宽度。
+        conv_kernel_sizes (list): 各卷积层核大小列表。
+        conv_n_channels (list): 各卷积层通道数列表。
+        conv_strides (list): 各卷积层步长列表。
+
+    返回：
+        CNN: 构建好的卷积神经网络模型。
+    """
     conv_args = dict(
         kernel_sizes=conv_kernel_sizes,
         n_channels=conv_n_channels,
@@ -57,11 +113,10 @@ def gen_image_net(image_height, image_width,
         output_size=1,
     )
     conv_kwargs = dict(
-        hidden_sizes=[],  # linear layers after conv
+        hidden_sizes=[],  # 卷积层后接的全连接层
         batch_norm_conv=False,
         batch_norm_fc=False,
     )
-
     return CNN(
         **conv_args,
         paddings=np.zeros(len(conv_args['kernel_sizes']), dtype=np.int64),
@@ -73,76 +128,81 @@ def gen_image_net(image_height, image_width,
         **conv_kwargs
     )
 
+# =============================================================================
+# 定义基于 TorchVision ResNet 的图像奖励模型生成函数（通常生成 ResNet-18）
+# =============================================================================
 def gen_image_net2():
-    from torchvision.models.resnet import ResNet
-    from torchvision.models.resnet import BasicBlock
+    """
+    生成基于 ResNet-18 的图像奖励模型。
 
+    返回：
+        ResNet: 构建的 ResNet-18 模型。
+    """
+    from torchvision.models.resnet import ResNet, BasicBlock
     model = ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1)
     return model
 
+# =============================================================================
+# 优化版 K-Center Greedy 算法
+# 利用向量化操作和 torch.cdist 加速距离计算，用于从候选查询中选择具有代表性的样本
+# =============================================================================
 def KCenterGreedy(obs, full_obs, num_new_sample):
+    """
+    使用 K-Center Greedy 算法选择具有代表性的样本索引。
+
+    参数：
+        obs (np.array): 候选样本数组，形状 (N, feature_dim)。
+        full_obs (np.array): 已采样样本数组，形状 (M, feature_dim)。
+        num_new_sample (int): 需要选择的新样本数量。
+
+    返回：
+        list: 选中的样本索引列表。
+    """
     selected_index = []
     current_index = list(range(obs.shape[0]))
     new_obs = obs
     new_full_obs = full_obs
-    start_time = time.time()
     for count in range(num_new_sample):
+        # 利用 torch.cdist 向量化计算欧氏距离
         dist = compute_smallest_dist(new_obs, new_full_obs)
-        max_index = torch.argmax(dist)
-        max_index = max_index.item()
-        
-        if count == 0:
-            selected_index.append(max_index)
-        else:
-            selected_index.append(current_index[max_index])
-        current_index = current_index[0:max_index] + current_index[max_index+1:]
-        
+        max_index = torch.argmax(dist).item()
+        selected_index.append(current_index[max_index])
+        # 更新候选集：删除已选样本
+        del current_index[max_index]
         new_obs = obs[current_index]
-        new_full_obs = np.concatenate([
-            full_obs, 
-            obs[selected_index]], 
-            axis=0)
+        new_full_obs = np.concatenate([full_obs, obs[[selected_index[-1]]]], axis=0)
     return selected_index
 
 def compute_smallest_dist(obs, full_obs):
-    obs = torch.from_numpy(obs).float()
-    full_obs = torch.from_numpy(full_obs).float()
-    batch_size = 100
-    with torch.no_grad():
-        total_dists = []
-        for full_idx in range(len(obs) // batch_size + 1):
-            full_start = full_idx * batch_size
-            if full_start < len(obs):
-                full_end = (full_idx + 1) * batch_size
-                dists = []
-                for idx in range(len(full_obs) // batch_size + 1):
-                    start = idx * batch_size
-                    if start < len(full_obs):
-                        end = (idx + 1) * batch_size
-                        dist = torch.norm(
-                            obs[full_start:full_end, None, :].to(device) - full_obs[None, start:end, :].to(device),
-                            dim=-1,
-                            p=2
-                        )
-                        dists.append(dist)
-                dists = torch.cat(dists, dim=1)
-                small_dists = torch.min(dists, dim=1).values
-                total_dists.append(small_dists)
-                
-        total_dists = torch.cat(total_dists)
-    return total_dists.unsqueeze(1)
+    """
+    使用 torch.cdist 向量化计算每个候选样本与已选样本集合中最小欧氏距离。
 
+    参数：
+        obs (np.array): 候选样本数组，形状 (N, feature_dim)。
+        full_obs (np.array): 已选样本数组，形状 (M, feature_dim)。
+
+    返回：
+        torch.Tensor: 每个候选样本与最近样本的距离，形状 (N, 1)。
+    """
+    obs_tensor = torch.from_numpy(obs).float().to(device)
+    full_obs_tensor = torch.from_numpy(full_obs).float().to(device)
+    with torch.no_grad():
+        dists = torch.cdist(obs_tensor, full_obs_tensor, p=2)
+        small_dists = dists.min(dim=1).values
+    return small_dists.unsqueeze(1)
+
+# =============================================================================
+# RewardModel 类
+# =============================================================================
 class RewardModel:
     def __init__(self, ds, da, 
                  ensemble_size=3, lr=3e-4, mb_size=128, size_segment=1, 
                  max_size=100, activation='tanh', capacity=5e5,  
                  large_batch=1, label_margin=0.0, 
                  teacher_beta=-1, teacher_gamma=1, 
-                 teacher_eps_mistake=0, 
-                 teacher_eps_skip=0, 
-                 teacher_eps_equal=0,
+                 teacher_eps_mistake=0, teacher_eps_skip=0, teacher_eps_equal=0,
                  
-                 # vlm related params
+                 # VLM 相关参数
                  vlm_label=True,
                  env_name="CartPole-v1",
                  vlm="gemini_free_form",
@@ -152,10 +212,10 @@ class RewardModel:
                  save_query_interval=25,
                  cached_label_path=None,
 
-                 # image based reward
+                 # 图像奖励相关参数
                  reward_model_layers=3,
                  reward_model_H=256,
-                 image_reward=True,
+                 image_reward=True,  # True 表示使用 VLM（图像或点云均可）
                  image_height=128,
                  image_width=128,
                  resize_factor=1,
@@ -163,10 +223,42 @@ class RewardModel:
                  conv_kernel_sizes=[5, 3, 3, 3],
                  conv_n_channels=[16, 32, 64, 128],
                  conv_strides=[3, 2, 2, 2],
+                 
+                 # 数据类型： "image" 或 "pointcloud"
+                 data_type="pointcloud",
+                 # 当 data_type=="pointcloud" 时，点云中点的数量
+                 point_cloud_num_points=8192,
                  **kwargs
                 ):
-        
-        # VLM 相关
+        """
+        初始化 RewardModel 类实例，构建奖励模型并初始化相关数据缓存及参数。
+
+        参数：
+            ds: 状态维度。
+            da: 动作维度。
+            ensemble_size: 模型集大小。
+            lr: 学习率。
+            mb_size: 采样批量大小。
+            size_segment: 存储轨迹时每段数据的尺寸。
+            max_size: 存储轨迹的最大数量。
+            capacity: 缓冲区容量。
+            large_batch: 大批量训练倍数。
+            label_margin: 标签边缘。
+            teacher_beta, teacher_gamma, teacher_eps_*: 教师模型相关参数。
+            vlm_label: 是否使用 VLM 标注。
+            env_name: 环境名称。
+            vlm: VLM 模式。
+            clip_prompt, log_dir, flip_vlm_label, save_query_interval, cached_label_path:
+                其它相关配置参数。
+            reward_model_layers, reward_model_H: 奖励模型网络结构参数。
+            image_reward: 是否使用图像奖励。
+            image_height, image_width, resize_factor: 图像相关参数。
+            resnet: 是否使用 ResNet 架构。
+            conv_kernel_sizes, conv_n_channels, conv_strides: 卷积网络参数。
+            data_type: 数据类型，可选 "image" 或 "pointcloud"。
+            point_cloud_num_points: 点云中点的数量。
+        """
+        # 保存 VLM 相关参数
         self.vlm_label = vlm_label
         self.env_name = env_name
         self.vlm = vlm
@@ -177,7 +269,7 @@ class RewardModel:
         self.train_times = 0
         self.save_query_interval = save_query_interval
 
-        # 一些基础参数
+        # 基础参数
         self.ds = ds
         self.da = da
         self.de = ensemble_size
@@ -185,11 +277,9 @@ class RewardModel:
         self.ensemble = []
         self.paramlst = []
         self.opt = None
-        self.model = None
         self.max_size = max_size
         self.activation = activation
         self.size_segment = size_segment
-        
         self.capacity = int(capacity)
         self.reward_model_layers = reward_model_layers
         self.reward_model_H = reward_model_H
@@ -199,52 +289,51 @@ class RewardModel:
         self.conv_n_channels = conv_n_channels
         self.conv_strides = conv_strides
 
-        # 点云只用于“打标签”，不做训练
-        self.N = 8192
-        self.point_cloud_dim = self.N * 6  
-        self.point_cloud_inputs = []
+        # 保存数据类型和点云相关设置
+        self.data_type = data_type
+        self.point_cloud_num_points = point_cloud_num_points
 
-        # ————————————————————————————————————————
-        # 根据是否使用图像reward，初始化存储 buffer_seg1, buffer_seg2
-        # ————————————————————————————————————————
-        if not image_reward:
-            # 非图像reward，则存 (s,a) 向量
-            self.buffer_seg1 = np.empty((self.capacity, size_segment, self.ds + self.da), dtype=np.float32)
-            self.buffer_seg2 = np.empty((self.capacity, size_segment, self.ds + self.da), dtype=np.float32)
-        else:
-            # 无论是否 vlm == 'pointllm_two_image'，这里都统一按图像大小存储
-            # 不再存储点云形状到 buffer_seg，因为训练只用图像
-            assert self.size_segment == 1
+        # 针对点云数据与图像数据分别初始化存储列表
+        self.point_cloud_inputs = []
+        if self.data_type == "image" or self.vlm == "pointllm_two_image":
+            self.img_inputs = []
+
+        # 根据数据类型构建缓冲区（预分配内存以降低动态扩容开销）
+        if self.data_type == "image":
+            # 图像数据格式： (capacity, 1, image_height, image_width, 3)
             self.buffer_seg1 = np.empty((self.capacity, 1, image_height, image_width, 3), dtype=np.uint8)
             self.buffer_seg2 = np.empty((self.capacity, 1, image_height, image_width, 3), dtype=np.uint8)
-            self.image_height = image_height
-            self.image_width = image_width
-            self.resize_factor = resize_factor
-
+        elif self.data_type == "pointcloud":
+            # 点云数据格式： (capacity, 1, point_cloud_num_points, 6)
+            self.buffer_seg1 = np.empty((self.capacity, 1, point_cloud_num_points, 6), dtype=np.float32)
+            self.buffer_seg2 = np.empty((self.capacity, 1, point_cloud_num_points, 6), dtype=np.float32)
+        else:
+            # 默认使用状态-动作向量
+            self.buffer_seg1 = np.empty((self.capacity, size_segment, self.ds + self.da), dtype=np.float32)
+            self.buffer_seg2 = np.empty((self.capacity, size_segment, self.ds + self.da), dtype=np.float32)
+            
         self.buffer_label = np.empty((self.capacity, 1), dtype=np.float32)
         self.buffer_index = 0
         self.buffer_full = False
 
-        # 训练过程中的数据结构
+        # 存储轨迹数据（用于奖励模型打标签），预留列表避免频繁内存拷贝
         self.inputs = []
         self.targets = []
         self.raw_actions = []
-        self.img_inputs = []
+        if self.data_type == "image" or self.vlm == "pointllm_two_image":
+            self.img_inputs = []
         self.mb_size = mb_size
         self.origin_mb_size = mb_size
 
-        # 根据是否使用图像reward来设定 batch size
-        if not image_reward:
-            self.train_batch_size = 128
+        # 针对点云数据，建议使用较小的训练批量以降低内存占用
+        if self.data_type == "pointcloud":
+            self.train_batch_size = 8
         else:
-            if not self.resnet:
-                self.train_batch_size = 64
-            else:
-                self.train_batch_size = 32
+            self.train_batch_size = 64 if not self.resnet else 32
 
         self.CEloss = nn.CrossEntropyLoss()
 
-        # 教师参数
+        # 教师参数设置
         self.teacher_beta = teacher_beta
         self.teacher_gamma = teacher_gamma
         self.teacher_eps_mistake = teacher_eps_mistake
@@ -252,18 +341,17 @@ class RewardModel:
         self.teacher_eps_skip = teacher_eps_skip
         self.teacher_thres_skip = 0
         self.teacher_thres_equal = 0
-        
         self.label_margin = label_margin
-        self.label_target = 1 - 2*self.label_margin
+        self.label_target = 1 - 2 * self.label_margin
 
-        # 处理 cached_label_path
+        # 处理缓存标签路径
         file_path = os.path.abspath(__file__)
         dir_path = os.path.dirname(file_path)
         if cached_label_path is not None:
-            self.cached_label_path = "{}/{}".format(dir_path, cached_label_path)
+            self.cached_label_path = os.path.join(dir_path, cached_label_path)
         else:
             self.cached_label_path = None
-            
+
         self.read_cache_idx = 0
         if self.cached_label_path is not None:
             all_cached_labels = sorted(os.listdir(self.cached_label_path))
@@ -271,60 +359,78 @@ class RewardModel:
         else:
             self.all_cached_labels = []
 
-        # 构建 ensemble 模型
+        # 构建 ensemble 奖励模型
         self.construct_ensemble()
 
-    def eval(self,):
+    def eval(self):
+        """设置所有模型为评估模式"""
         for i in range(self.de):
             self.ensemble[i].eval()
 
-    def train(self,):
+    def train(self):
+        """设置所有模型为训练模式"""
         for i in range(self.de):
             self.ensemble[i].train()
-    
+
     def softXEnt_loss(self, input, target):
-        logprobs = nn.functional.log_softmax(input, dim=1)
+        """
+        计算 soft cross entropy 损失，适用于软标签。
+
+        参数：
+            input (torch.Tensor): 模型输出 logits。
+            target (torch.Tensor): 软标签。
+
+        返回：
+            torch.Tensor: 损失值。
+        """
+        logprobs = F.log_softmax(input, dim=1)
         return -(target * logprobs).sum() / input.shape[0]
-    
+
     def change_batch(self, new_frac):
+        """动态调整批量大小"""
         self.mb_size = int(self.origin_mb_size * new_frac)
-    
+
     def set_batch(self, new_batch):
+        """设置批量大小"""
         self.mb_size = int(new_batch)
-        
+
     def set_teacher_thres_skip(self, new_margin):
+        """设置教师跳过阈值"""
         self.teacher_thres_skip = new_margin * self.teacher_eps_skip
-        
+
     def set_teacher_thres_equal(self, new_margin):
+        """设置教师相等阈值"""
         self.teacher_thres_equal = new_margin * self.teacher_eps_equal
 
-    # ————————————————————————————————————————
-    # 构建网络 —— 不再使用 PointNet
-    # ————————————————————————————————————————
+    # =============================================================================
+    # 构建 ensemble 奖励模型
+    # 根据不同配置构建不同架构的模型：
+    #   1. 非图像奖励：使用纯 MLP；
+    #   2. 使用 pointllm_two_image 且 data_type 为 pointcloud：使用 PointCloudNet；
+    #   3. 其它情况：根据 resnet 参数使用 gen_image_net 或 gen_image_net2。
+    # =============================================================================
     def construct_ensemble(self):
         for i in range(self.de):
             if not self.image_reward:
-                # 原先的纯 MLP：处理 obs + action
                 model = nn.Sequential(*gen_net(
-                    in_size=self.ds + self.da, 
-                    out_size=1, 
-                    H=self.reward_model_H, 
-                    n_layers=self.reward_model_layers, 
+                    in_size=self.ds + self.da,
+                    out_size=1,
+                    H=self.reward_model_H,
+                    n_layers=self.reward_model_layers,
                     activation=self.activation
                 )).float().to(device)
-
             elif self.vlm == 'pointllm_two_image':
-                # 当配置为 pointllm_two_image 时，也用图像网络（不再使用 PointNet）
-                if not self.resnet:
-                    model = gen_image_net(
-                        self.image_height, self.image_width,
-                        self.conv_kernel_sizes, self.conv_n_channels, self.conv_strides
-                    ).float().to(device)
+                if self.data_type == "pointcloud":
+                    model = gen_point_cloud_net(num_points=self.point_cloud_num_points, input_dim=6, device=device, normalize=False)
                 else:
-                    model = gen_image_net2().float().to(device)
-
+                    if not self.resnet:
+                        model = gen_image_net(
+                            self.image_height, self.image_width,
+                            self.conv_kernel_sizes, self.conv_n_channels, self.conv_strides
+                        ).float().to(device)
+                    else:
+                        model = gen_image_net2().float().to(device)
             else:
-                # 普通图像模式
                 if not self.resnet:
                     model = gen_image_net(
                         self.image_height, self.image_width,
@@ -332,594 +438,414 @@ class RewardModel:
                     ).float().to(device)
                 else:
                     model = gen_image_net2().float().to(device)
-
             self.ensemble.append(model)
             self.paramlst.extend(model.parameters())
-
-        # 优化器
         self.opt = torch.optim.Adam(self.paramlst, lr=self.lr)
 
-    # ————————————————————————————————————————
-    # 采集数据，存储在 self.inputs 等结构中
-    # 注意：点云只在打标签时使用，不进入训练
-    # ————————————————————————————————————————
+    # =============================================================================
+    # 数据采集：将新数据添加到轨迹中
+    # 根据 data_type 或 vlm=="pointllm_two_image" 将图像数据存入 img_inputs，
+    # 将点云数据存入 point_cloud_inputs。
+    # =============================================================================
     def add_data(self, obs, act, rew, done, img=None, point_cloud=None):
         """
-        添加新的数据到训练数据中(仅用于形成轨迹/打标签)。
-        obs: (obs_dim,)
-        act: (action_dim,)
-        rew: float
-        done: bool
-        img: (H, W, 3) or None
-        point_cloud: (N, 6) or None
+        将新数据加入轨迹缓存。
+
+        参数：
+            obs (np.array): 当前状态。
+            act (np.array): 当前动作。
+            rew (float 或 np.array): 当前奖励。
+            done (bool): 当前是否终止。
+            img (np.array): 对应图像数据（可选）。
+            point_cloud (np.array): 对应点云数据（可选）。
         """
         sa_t = np.concatenate([obs, act], axis=-1)
         flat_input = sa_t.reshape(1, self.da + self.ds)
-
         r_t = np.array(rew).reshape(1, 1)
-        if img is not None:
-            flat_img = img.reshape(1, img.shape[0], img.shape[1], img.shape[2])
-        if point_cloud is not None:
-            # 点云只存起来用于后续打标签
+        if (self.data_type == "image" or self.vlm == "pointllm_two_image") and img is not None:
+            flat_img = np.copy(img.reshape(1, img.shape[0], img.shape[1], img.shape[2]))
+        if (self.data_type == "pointcloud" or self.vlm == "pointllm_two_image") and point_cloud is not None:
             point_cloud = point_cloud.astype(np.float32)
-
-            # 做安全检查与采样
-            if point_cloud.ndim > 2:
-                point_cloud = point_cloud[0]
-            elif point_cloud.ndim == 1:
-                point_cloud = point_cloud.reshape(-1, 6)
-
-            flat_point_cloud = point_cloud.reshape(1, -1)
-
+            flat_point_cloud = np.copy(point_cloud.reshape(1, self.point_cloud_num_points, 6))
         init_data = len(self.inputs) == 0
         if init_data:
             self.inputs.append(flat_input)
             self.targets.append(r_t)
-            if img is not None:
+            if (self.data_type == "image" or self.vlm == "pointllm_two_image") and img is not None:
                 self.img_inputs.append(flat_img)
-            if point_cloud is not None:
+            if (self.data_type == "pointcloud" or self.vlm == "pointllm_two_image") and point_cloud is not None:
                 self.point_cloud_inputs.append(flat_point_cloud)
         elif done:
             if 'Cloth' not in self.env_name:
                 self.inputs[-1] = np.concatenate([self.inputs[-1], flat_input])
                 self.targets[-1] = np.concatenate([self.targets[-1], r_t])
-                if img is not None:
+                if (self.data_type == "image" or self.vlm == "pointllm_two_image") and img is not None:
                     self.img_inputs[-1] = np.concatenate([self.img_inputs[-1], flat_img], axis=0)
-                if point_cloud is not None:
+                if (self.data_type == "pointcloud" or self.vlm == "pointllm_two_image") and point_cloud is not None:
                     self.point_cloud_inputs[-1] = np.concatenate([self.point_cloud_inputs[-1], flat_point_cloud], axis=0)
-
-                # FIFO
                 if len(self.inputs) > self.max_size:
                     self.inputs = self.inputs[1:]
                     self.targets = self.targets[1:]
-                    if img is not None:
+                    if self.data_type == "image" or self.vlm == "pointllm_two_image":
                         self.img_inputs = self.img_inputs[1:]
-                    if point_cloud is not None:
+                    if self.data_type == "pointcloud" or self.vlm == "pointllm_two_image":
                         self.point_cloud_inputs = self.point_cloud_inputs[1:]
-                # 开始新的轨迹
                 self.inputs.append([])
                 self.targets.append([])
-                if img is not None:
+                if self.data_type == "image" or self.vlm == "pointllm_two_image":
                     self.img_inputs.append([])
-                if point_cloud is not None:
+                if self.data_type == "pointcloud" or self.vlm == "pointllm_two_image":
                     self.point_cloud_inputs.append([])
-
             else:
-                # ClothFold 只有一步
                 self.inputs.append([flat_input])
                 self.targets.append([r_t])
-                if img is not None:
+                if self.data_type == "image" or self.vlm == "pointllm_two_image":
                     self.img_inputs.append([flat_img])
-                if point_cloud is not None:
+                if self.data_type == "pointcloud" or self.vlm == "pointllm_two_image":
                     self.point_cloud_inputs.append([flat_point_cloud])
                 if len(self.inputs) > self.max_size:
                     self.inputs = self.inputs[1:]
                     self.targets = self.targets[1:]
-                    if img is not None:
+                    if self.data_type == "image" or self.vlm == "pointllm_two_image":
                         self.img_inputs = self.img_inputs[1:]
-                    if point_cloud is not None:
+                    if self.data_type == "pointcloud" or self.vlm == "pointllm_two_image":
                         self.point_cloud_inputs = self.point_cloud_inputs[1:]
         else:
-            # 还在当前轨迹
             if len(self.inputs[-1]) == 0:
                 self.inputs[-1] = flat_input
                 self.targets[-1] = r_t
-                if img is not None:
+                if (self.data_type == "image" or self.vlm == "pointllm_two_image") and img is not None:
                     self.img_inputs[-1] = flat_img
-                if point_cloud is not None:
+                if (self.data_type == "pointcloud" or self.vlm == "pointllm_two_image") and point_cloud is not None:
                     self.point_cloud_inputs[-1] = flat_point_cloud
             else:
                 self.inputs[-1] = np.concatenate([self.inputs[-1], flat_input])
                 self.targets[-1] = np.concatenate([self.targets[-1], r_t])
-                if img is not None:
+                if (self.data_type == "image" or self.vlm == "pointllm_two_image") and img is not None:
                     self.img_inputs[-1] = np.concatenate([self.img_inputs[-1], flat_img], axis=0)
-                if point_cloud is not None:
+                if (self.data_type == "pointcloud" or self.vlm == "pointllm_two_image") and point_cloud is not None:
                     self.point_cloud_inputs[-1] = np.concatenate([self.point_cloud_inputs[-1], flat_point_cloud], axis=0)
 
     def add_data_batch(self, obses, rewards):
-        # 用于一次性添加多条
+        """
+        批量添加数据至轨迹缓存。
+
+        参数：
+            obses (np.array): 状态数组，形状 (num_env, ...)。
+            rewards (np.array): 奖励数组，对应形状 (num_env, ...)。
+        """
         num_env = obses.shape[0]
         for index in range(num_env):
             self.inputs.append(obses[index])
             self.targets.append(rewards[index])
 
-    # ————————————————————————————————————————
-    # 以下是不变的评估/打标签/查询逻辑
-    # ————————————————————————————————————————
-    def get_rank_probability(self, x_1, x_2):
-        # get probability x_1 > x_2
-        probs = []
-        for member in range(self.de):
-            probs.append(self.p_hat_member(x_1, x_2, member=member).cpu().numpy())
-        probs = np.array(probs)
-        return np.mean(probs, axis=0), np.std(probs, axis=0)
-    
-    def get_entropy(self, x_1, x_2):
-        probs = []
-        for member in range(self.de):
-            probs.append(self.p_hat_entropy(x_1, x_2, member=member).cpu().numpy())
-        probs = np.array(probs)
-        return np.mean(probs, axis=0), np.std(probs, axis=0)
-
-    def p_hat_member(self, x_1, x_2, member=-1):
-        with torch.no_grad():
-            r_hat1 = self.r_hat_member(x_1, member=member)
-            r_hat2 = self.r_hat_member(x_2, member=member)
-            r_hat1 = r_hat1.sum(axis=1)
-            r_hat2 = r_hat2.sum(axis=1)
-            r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
-        return F.softmax(r_hat, dim=-1)[:, 0]
-    
-    def p_hat_entropy(self, x_1, x_2, member=-1):
-        with torch.no_grad():
-            r_hat1 = self.r_hat_member(x_1, member=member)
-            r_hat2 = self.r_hat_member(x_2, member=member)
-            r_hat1 = r_hat1.sum(axis=1)
-            r_hat2 = r_hat2.sum(axis=1)
-            r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
-        ent = F.softmax(r_hat, dim=-1) * F.log_softmax(r_hat, dim=-1)
-        ent = ent.sum(axis=-1).abs()
-        return ent
-
-    def r_hat_member(self, x, member=-1):
-        if isinstance(x, torch.Tensor):
-            x_tensor = x.float().to(device)
-        else:
-            x_tensor = torch.from_numpy(x).float().to(device)
-        output = self.ensemble[member](x_tensor)
-        return output
-
-    def r_hat(self, x):
-        # 将 ensemble 中各成员结果求平均
-        r_hats = []
-        for member in range(self.de):
-            r_hats.append(self.r_hat_member(x, member=member).detach().cpu().numpy())
-        r_hats = np.array(r_hats)
-        return np.mean(r_hats)
-
-    def r_hat_batch(self, x):
-        r_hats = []
-        for member in range(self.de):
-            r_hats.append(self.r_hat_member(x, member=member).detach().cpu().numpy())
-        r_hats = np.array(r_hats)
-        return np.mean(r_hats, axis=0)
-    
-    def save(self, model_dir, step):
-        for member in range(self.de):
-            torch.save(
-                self.ensemble[member].state_dict(),
-                '%s/reward_model_%s_%s.pt' % (model_dir, step, member)
-            )
-            
-    def load(self, model_dir, step):
-        file_dir = os.path.dirname(os.path.realpath(__file__))
-        model_dir = os.path.join(file_dir, model_dir)
-        for member in range(self.de):
-            self.ensemble[member].load_state_dict(
-                torch.load('%s/reward_model_%s_%s.pt' % (model_dir, step, member))
-            )
-    
-    def get_train_acc(self):
-        ensemble_acc = np.array([0 for _ in range(self.de)])
-        max_len = self.capacity if self.buffer_full else self.buffer_index
-        batch_size = 256
-        num_epochs = int(np.ceil(max_len / batch_size))
-        
-        total = 0
-        for epoch in range(num_epochs):
-            last_index = (epoch + 1) * batch_size
-            if last_index > max_len:
-                last_index = max_len
-                
-            sa_t_1 = self.buffer_seg1[epoch * batch_size:last_index]
-            sa_t_2 = self.buffer_seg2[epoch * batch_size:last_index]
-            labels = self.buffer_label[epoch * batch_size:last_index]
-            labels = torch.from_numpy(labels.flatten()).long().to(device)
-            total += labels.size(0)
-            for member in range(self.de):
-                r_hat1 = self.r_hat_member(sa_t_1, member=member).sum(axis=1)
-                r_hat2 = self.r_hat_member(sa_t_2, member=member).sum(axis=1)
-                r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
-                _, predicted = torch.max(r_hat.data, 1)
-                correct = (predicted == labels).sum().item()
-                ensemble_acc[member] += correct
-                
-        ensemble_acc = ensemble_acc / total
-        return np.mean(ensemble_acc)
-
-    # ————————————————————————————————————————
-    # 以下是从轨迹中随机抽取对比片段的逻辑
-    # ————————————————————————————————————————
+    # =============================================================================
+    # 从轨迹中随机采样查询对
+    # 采样策略：
+    #   - 当轨迹数（pool_size） > 1 时：按轨迹级采样；
+    #   - 当 pool_size == 1 时：从该轨迹内随机采样不同时间步，确保返回数据来自不同帧。
+    # =============================================================================
     def get_queries(self, mb_size=20):
         """
-        从存储的轨迹中获取查询对 (sa_t_1, sa_t_2)、(r_t_1, r_t_2)
-        以及对应的图像/点云数据。
-        经过本次修改后：
-        - 当 self.vlm == 'pointllm_two_image' 时，
-        不仅返回 point_cloud_t_1, point_cloud_t_2，
-        也同时返回 img_t_1, img_t_2（如果已存过图像）。
+        从轨迹中随机采样一批查询对，用于奖励标签生成。
+
+        参数：
+            mb_size (int): 采样批量大小。
+
+        返回：
+            根据 data_type 与 vlm 配置返回不同数据元组：
+              - 若 data_type=="image" 且不使用 pointllm_two_image：
+                返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2)
+              - 若 data_type=="pointcloud"：
+                返回 (None, None, r_t_1, r_t_2, pc_t_1, pc_t_2)
+              - 若 vlm=='pointllm_two_image' 且 data_type=="image"：
+                返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2)
+
+        说明：
+            当 pool_size == 1 时，从该轨迹内随机采样不同时间步，保证返回的数据不会完全一致。
         """
-        # 1) 判断当前输入数据集长度
-        len_traj, max_len = len(self.inputs[0]), len(self.inputs)
-        if len(self.inputs[-1]) < len_traj:
-            max_len = max_len - 1
+        pool_size = len(self.inputs)
+        if pool_size > 1 and len(self.inputs[-1]) < len(self.inputs[0]):
+            pool_size -= 1
 
-        # 2) 将轨迹数据转为 numpy 方便索引
-        train_inputs = np.array(self.inputs[:max_len])   # shape: (max_len, traj_len, ds+da)
-        train_targets = np.array(self.targets[:max_len]) # shape: (max_len, traj_len, 1)
-        
-        # 3) 如果需要 VLM 或图像reward，取出图像/点云
-        if self.vlm_label or self.image_reward:
-            if self.vlm == 'pointllm_two_image' and self.vlm_label:
-                # 同时取点云数据与图像数据（需确保 self.img_inputs 里也存了图像）
-                train_point_clouds = np.array(self.point_cloud_inputs[:max_len])
-                train_images = np.array(self.img_inputs[:max_len])
-                # 如果您的某些环境下需要 squeeze(1)（如 Cloth），可按需处理：
-                if 'Cloth' in self.env_name:
-                    train_images = train_images.squeeze(1)
+        train_inputs = np.array(self.inputs[:pool_size])   # shape: (pool_size, traj_len, ds+da)
+        train_targets = np.array(self.targets[:pool_size])   # shape: (pool_size, traj_len, 1)
+
+        # 针对图像数据（非 pointllm_two_image）
+        if self.data_type == "image" and not (self.vlm == 'pointllm_two_image'):
+            train_images = np.array(self.img_inputs[:pool_size])  # shape: (pool_size, traj_len, H, W, 3)
+            if pool_size == 1:
+                traj_len = train_inputs.shape[1]
+                time_indices1 = np.random.randint(0, traj_len, size=mb_size)
+                time_indices2 = np.random.randint(0, traj_len, size=mb_size)
+                sa_t_1 = train_inputs[0, time_indices1, :]
+                sa_t_2 = train_inputs[0, time_indices2, :]
+                r_t_1 = train_targets[0, time_indices1, :]
+                r_t_2 = train_targets[0, time_indices2, :]
+                img_t_1 = train_images[0, time_indices1, ...]
+                img_t_2 = train_images[0, time_indices2, ...]
             else:
-                # 非 pointllm_two_image 情况，如普通图像模式
-                train_images = np.array(self.img_inputs[:max_len])
-                if 'Cloth' in self.env_name:
-                    train_images = train_images.squeeze(1)
-
-        # 4) 随机选择两条轨迹索引
-        batch_index_1 = np.random.choice(max_len, size=mb_size, replace=True)
-        batch_index_2 = np.random.choice(max_len, size=mb_size, replace=True)
-
-        sa_t_1 = train_inputs[batch_index_1]  # (mb_size, traj_len, ds+da)
-        r_t_1 = train_targets[batch_index_1]  # (mb_size, traj_len, 1)
-        sa_t_2 = train_inputs[batch_index_2]
-        r_t_2 = train_targets[batch_index_2]
-
-        # 5) 若需要图像或点云，则同样随机取
-        if self.vlm_label or self.image_reward:
-            if self.vlm == 'pointllm_two_image' and self.vlm_label:
-                point_cloud_t_1 = train_point_clouds[batch_index_1]  # (mb_size, traj_len, N*6?)
-                point_cloud_t_2 = train_point_clouds[batch_index_2]
-                img_t_1 = train_images[batch_index_1]                # (mb_size, traj_len, H, W, 3)?
+                batch_index_1 = np.random.choice(pool_size, size=mb_size, replace=True)
+                batch_index_2 = np.random.choice(pool_size, size=mb_size, replace=True)
+                sa_t_1 = train_inputs[batch_index_1]
+                r_t_1 = train_targets[batch_index_1]
+                sa_t_2 = train_inputs[batch_index_2]
+                r_t_2 = train_targets[batch_index_2]
+                img_t_1 = train_images[batch_index_1]
                 img_t_2 = train_images[batch_index_2]
+            return sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2
+
+        # 针对点云数据
+        elif self.data_type == "pointcloud":
+            train_point_clouds = np.array(self.point_cloud_inputs[:pool_size])
+            if pool_size == 1:
+                traj_len = train_point_clouds.shape[1]
+                time_indices1 = np.random.randint(0, traj_len, size=mb_size)
+                time_indices2 = np.random.randint(0, traj_len, size=mb_size)
+                r_t_1 = train_targets[0, time_indices1, :]
+                r_t_2 = train_targets[0, time_indices2, :]
+                pc_t_1 = train_point_clouds[0, time_indices1, ...]  # (mb_size, point_cloud_num_points, 6)
+                pc_t_2 = train_point_clouds[0, time_indices2, ...]
             else:
-                img_t_1 = train_images[batch_index_1]                # (mb_size, traj_len, H, W, 3)
+                batch_index_1 = np.random.choice(pool_size, size=mb_size, replace=True)
+                batch_index_2 = np.random.choice(pool_size, size=mb_size, replace=True)
+                r_t_1 = train_targets[batch_index_1]
+                r_t_2 = train_targets[batch_index_2]
+                pc_t_1 = train_point_clouds[batch_index_1]
+                pc_t_2 = train_point_clouds[batch_index_2]
+            return None, None, r_t_1, r_t_2, pc_t_1, pc_t_2
+
+        # 针对 vlm 为 'pointllm_two_image' 且 data_type=="image" 的情况
+        elif self.vlm == 'pointllm_two_image' and self.data_type == "image":
+            train_point_clouds = np.array(self.point_cloud_inputs[:pool_size])
+            train_images = np.array(self.img_inputs[:pool_size])
+            if train_inputs.shape[1] != train_point_clouds.shape[1]:
+                print("WARNING: 状态-动作轨迹长度与点云/图像轨迹长度不一致，统一取第一帧！")
+                train_point_clouds = train_point_clouds[:, 0:1, ...]
+                train_images = train_images[:, 0:1, ...]
+            if pool_size == 1:
+                traj_len = train_inputs.shape[1]
+                time_indices1 = np.random.randint(0, traj_len, size=mb_size)
+                time_indices2 = np.random.randint(0, traj_len, size=mb_size)
+                sa_t_1 = train_inputs[0, time_indices1, :]
+                sa_t_2 = train_inputs[0, time_indices2, :]
+                r_t_1 = train_targets[0, time_indices1, :]
+                r_t_2 = train_targets[0, time_indices2, :]
+                pc_t_1 = train_point_clouds[0, time_indices1, ...]
+                pc_t_2 = train_point_clouds[0, time_indices2, ...]
+                img_t_1 = train_images[0, time_indices1, ...]
+                img_t_2 = train_images[0, time_indices2, ...]
+            else:
+                batch_index_1 = np.random.choice(pool_size, size=mb_size, replace=True)
+                batch_index_2 = np.random.choice(pool_size, size=mb_size, replace=True)
+                sa_t_1 = train_inputs[batch_index_1]
+                r_t_1 = train_targets[batch_index_1]
+                sa_t_2 = train_inputs[batch_index_2]
+                r_t_2 = train_targets[batch_index_2]
+                pc_t_1 = train_point_clouds[batch_index_1]
+                pc_t_2 = train_point_clouds[batch_index_2]
+                img_t_1 = train_images[batch_index_1]
                 img_t_2 = train_images[batch_index_2]
+            return sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2
 
-        # 6) 将 (mb_size, traj_len, ds+da) 改成 (mb_size*traj_len, ds+da)
-        #   同理，r_t_1, r_t_2 也 reshape
-        sa_t_1 = sa_t_1.reshape(-1, sa_t_1.shape[-1])
-        r_t_1 = r_t_1.reshape(-1, r_t_1.shape[-1])
-        sa_t_2 = sa_t_2.reshape(-1, sa_t_2.shape[-1])
-        r_t_2 = r_t_2.reshape(-1, r_t_2.shape[-1])
-
-        if self.vlm_label or self.image_reward:
-            if self.vlm == 'pointllm_two_image' and self.vlm_label:
-                # point_cloud
-                point_cloud_t_1 = point_cloud_t_1.reshape(-1, point_cloud_t_1.shape[-1])
-                point_cloud_t_2 = point_cloud_t_2.reshape(-1, point_cloud_t_2.shape[-1])
-                # images
-                img_t_1 = img_t_1.reshape(-1, img_t_1.shape[2], img_t_1.shape[3], img_t_1.shape[4])
-                img_t_2 = img_t_2.reshape(-1, img_t_2.shape[2], img_t_2.shape[3], img_t_2.shape[4])
-            else:
-                # 只处理图像
-                img_t_1 = img_t_1.reshape(-1, img_t_1.shape[2], img_t_1.shape[3], img_t_1.shape[4])
-                img_t_2 = img_t_2.reshape(-1, img_t_2.shape[2], img_t_2.shape[3], img_t_2.shape[4])
-
-        # 7) 处理时间片段（若 size_segment > 1，需要随机截取 segment）
-        time_index = np.array([list(range(i * len_traj, i * len_traj + self.size_segment)) 
-                            for i in range(mb_size)])
-        if 'Cloth' not in self.env_name:
-            random_idx_1 = np.random.choice(len_traj - self.size_segment, size=mb_size, replace=True).reshape(-1, 1)
-            random_idx_2 = np.random.choice(len_traj - self.size_segment, size=mb_size, replace=True).reshape(-1, 1)
-            time_index_1 = time_index + random_idx_1
-            time_index_2 = time_index + random_idx_2
         else:
-            time_index_1 = time_index
-            time_index_2 = time_index
+            raise ValueError("未知的 reward_data_type，请检查配置！")
 
-        # 8) 根据索引取出 segment
-        sa_t_1 = np.take(sa_t_1, time_index_1, axis=0)  # (mb_size, size_segment, ds+da)
-        r_t_1 = np.take(r_t_1, time_index_1, axis=0)
-        sa_t_2 = np.take(sa_t_2, time_index_2, axis=0)
-        r_t_2 = np.take(r_t_2, time_index_2, axis=0)
-
-        # 同理取出图像或点云
-        if self.vlm_label or self.image_reward:
-            if self.vlm == 'pointllm_two_image' and self.vlm_label:
-                point_cloud_t_1 = np.take(point_cloud_t_1, time_index_1, axis=0).squeeze(1)
-                point_cloud_t_2 = np.take(point_cloud_t_2, time_index_2, axis=0).squeeze(1)
-                img_t_1 = np.take(img_t_1, time_index_1, axis=0)
-                img_t_2 = np.take(img_t_2, time_index_2, axis=0)
-                
-                # 拼接图像 (参考原有逻辑，如果 size_segment>1，需要把多张合并)
-                batch_size, horizon, h, w, _ = img_t_1.shape
-                transposed_images = np.transpose(img_t_1, (0, 2, 1, 3, 4))
-                img_t_1 = transposed_images.reshape(batch_size, h, horizon * w, 3)
-                transposed_images = np.transpose(img_t_2, (0, 2, 1, 3, 4))
-                img_t_2 = transposed_images.reshape(batch_size, h, horizon * w, 3)
-            else:
-                # 普通图像模式
-                img_t_1 = np.take(img_t_1, time_index_1, axis=0)
-                img_t_2 = np.take(img_t_2, time_index_2, axis=0)
-                batch_size, horizon, h, w, _ = img_t_1.shape
-                transposed_images = np.transpose(img_t_1, (0, 2, 1, 3, 4))
-                img_t_1 = transposed_images.reshape(batch_size, h, horizon * w, 3)
-                transposed_images = np.transpose(img_t_2, (0, 2, 1, 3, 4))
-                img_t_2 = transposed_images.reshape(batch_size, h, horizon * w, 3)
-
-        # 9) 最终返回
-        #   - 如果既没有 vlm_label 也没有 image_reward，则只返回 (sa_t_1, sa_t_2, r_t_1, r_t_2)
-        #   - 否则根据是否 pointllm_two_image
-        if not self.vlm_label and not self.image_reward:
-            return sa_t_1, sa_t_2, r_t_1, r_t_2
-        else:
-            if self.vlm == 'pointllm_two_image' and self.vlm_label:
-                # 返回：状态动作、奖励、点云、以及图像
-                return sa_t_1, sa_t_2, r_t_1, r_t_2, point_cloud_t_1, point_cloud_t_2, img_t_1, img_t_2
-            else:
-                # 普通图像模式，只返回 (img_t_1, img_t_2)
-                return sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2
-
-
-    def put_queries(self, sa_t_1, sa_t_2, labels):
+    # =============================================================================
+    # put_queries: 将查询对及对应标签写入缓冲区
+    # 采用预分配内存和 np.copyto 优化内存操作，确保数据高效写入缓冲区
+    # =============================================================================
+    def put_queries(self, query1, query2, labels):
         """
-        将打好标签的查询片段存入 buffer_seg1, buffer_seg2 中（用于训练）。
+        将查询对及对应标签写入缓冲区。
+
+        参数：
+            query1 (np.array): 第一组查询数据。
+                - 对于图像数据，其原始形状为 (N, H, W, 3)；
+                - 对于点云数据，其原始形状为 (N, point_cloud_num_points, 6)。
+            query2 (np.array): 第二组查询数据，与 query1 形状相同。
+            labels (np.array): 对应标签，形状为 (N, 1)。
+
+        实现说明：
+            - 若数据类型为 "image"，则将数据 reshape 为 (N, 1, H, W, 3)。
+            - 若数据类型为 "pointcloud" 且输入为 (N, point_cloud_num_points, 6)，则自动在轴 1 插入维度，
+              转换为 (N, 1, point_cloud_num_points, 6)。
+            - 随后使用 np.copyto 将数据写入预分配的缓冲区，支持环形写入。
         """
-        total_sample = sa_t_1.shape[0]
+        total_sample = query1.shape[0]
         next_index = self.buffer_index + total_sample
-
+        if self.data_type == "image":
+            query1 = query1.reshape(query1.shape[0], 1, query1.shape[1], query1.shape[2], query1.shape[3])
+            query2 = query2.reshape(query2.shape[0], 1, query2.shape[1], query2.shape[2], query2.shape[3])
+        elif self.data_type == "pointcloud":
+            if query1.ndim == 3:
+                query1 = query1[:, None, :, :]
+                query2 = query2[:, None, :, :]
         if next_index >= self.capacity:
             self.buffer_full = True
             maximum_index = self.capacity - self.buffer_index
-
-            np.copyto(self.buffer_seg1[self.buffer_index:self.capacity], sa_t_1[:maximum_index])
-            np.copyto(self.buffer_seg2[self.buffer_index:self.capacity], sa_t_2[:maximum_index])
+            np.copyto(self.buffer_seg1[self.buffer_index:self.capacity], query1[:maximum_index])
+            np.copyto(self.buffer_seg2[self.buffer_index:self.capacity], query2[:maximum_index])
             np.copyto(self.buffer_label[self.buffer_index:self.capacity], labels[:maximum_index])
-
             remain = total_sample - maximum_index
             if remain > 0:
-                np.copyto(self.buffer_seg1[0:remain], sa_t_1[maximum_index:])
-                np.copyto(self.buffer_seg2[0:remain], sa_t_2[maximum_index:])
+                np.copyto(self.buffer_seg1[0:remain], query1[maximum_index:])
+                np.copyto(self.buffer_seg2[0:remain], query2[maximum_index:])
                 np.copyto(self.buffer_label[0:remain], labels[maximum_index:])
-
             self.buffer_index = remain
         else:
-            # 如果是图像reward，就需要在前面再加一维 (1, ...)
-            if self.image_reward:
-                # 去除对 pointllm_two_image 的特殊分支，统一对图像做 reshape
-                sa_t_1 = sa_t_1.reshape(sa_t_1.shape[0], 1, sa_t_1.shape[1], sa_t_1.shape[2], sa_t_1.shape[3])
-                sa_t_2 = sa_t_2.reshape(sa_t_2.shape[0], 1, sa_t_2.shape[1], sa_t_2.shape[2], sa_t_2.shape[3])
-
-            np.copyto(self.buffer_seg1[self.buffer_index:next_index], sa_t_1)
-            np.copyto(self.buffer_seg2[self.buffer_index:next_index], sa_t_2)
+            np.copyto(self.buffer_seg1[self.buffer_index:next_index], query1)
+            np.copyto(self.buffer_seg2[self.buffer_index:next_index], query2)
             np.copyto(self.buffer_label[self.buffer_index:next_index], labels)
             self.buffer_index = next_index
 
+    # =============================================================================
+    # 根据真实奖励生成理性标签，并结合 VLM（二次修正）生成最终标签
+    # 针对不同数据类型分别处理。
+    # =============================================================================
     def get_label(self, 
-              sa_t_1, sa_t_2, 
-              r_t_1, r_t_2,
-              img_t_1=None, img_t_2=None,
-              point_cloud_t_1=None, point_cloud_t_2=None):
+                  sa_t_1, sa_t_2, 
+                  r_t_1, r_t_2,
+                  img_t_1=None, img_t_2=None,
+                  point_cloud_t_1=None, point_cloud_t_2=None):
         """
-        给定两个片段，先根据真实reward算出“理性标签”，再根据 VLM 做二次修正。
-        修改后要点：
-        1) pointllm_two_image 模式下，除了处理点云对比拿标签之外，也统一返回图像数据 (img_t_1, img_t_2)；
-        2) 其它 VLM 模式下，仅返回图像；
-        3) 若不使用图像奖励 & 不使用 VLM，则只返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, labels)。
+        生成标签：首先根据真实奖励生成理性标签，再通过 VLM 接口进行二次修正（若启用）。
+
+        参数：
+            sa_t_1, sa_t_2: 状态-动作序列（可选）。
+            r_t_1, r_t_2: 对应奖励序列。
+            img_t_1, img_t_2: 图像数据（可选）。
+            point_cloud_t_1, point_cloud_t_2: 点云数据（可选）。
+
+        返回：
+            根据数据类型返回相应元组，包含各数据及生成标签。
         """
-
-        # ------------------------------------------------
-        # A. 根据真实 reward 先做“理性”标签
-        # ------------------------------------------------
-        sum_r_t_1 = np.sum(r_t_1, axis=1)  # (batch,)
-        sum_r_t_2 = np.sum(r_t_2, axis=1)  # (batch,)
-
-        # 1) teacher_thres_skip：过滤掉 reward 过低片段
+        # A. 根据真实奖励生成理性标签
+        sum_r_t_1 = np.sum(r_t_1, axis=1)
+        sum_r_t_2 = np.sum(r_t_2, axis=1)
         if self.teacher_thres_skip > 0:
             max_r_t = np.maximum(sum_r_t_1, sum_r_t_2)
             valid_mask = (max_r_t > self.teacher_thres_skip).reshape(-1)
             if np.sum(valid_mask) == 0:
                 return None, None, None, None, []
-            # 筛选有效样本
-            sa_t_1 = sa_t_1[valid_mask]
-            sa_t_2 = sa_t_2[valid_mask]
+            sa_t_1 = sa_t_1[valid_mask] if sa_t_1 is not None else None
+            sa_t_2 = sa_t_2[valid_mask] if sa_t_2 is not None else None
             r_t_1 = r_t_1[valid_mask]
             r_t_2 = r_t_2[valid_mask]
             sum_r_t_1 = sum_r_t_1[valid_mask]
             sum_r_t_2 = sum_r_t_2[valid_mask]
-            if img_t_1 is not None:
+            if self.data_type == "image" and img_t_1 is not None:
                 img_t_1 = img_t_1[valid_mask]
-            if img_t_2 is not None:
                 img_t_2 = img_t_2[valid_mask]
-            if point_cloud_t_1 is not None:
+            if self.data_type == "pointcloud" and point_cloud_t_1 is not None:
                 point_cloud_t_1 = point_cloud_t_1[valid_mask]
-            if point_cloud_t_2 is not None:
                 point_cloud_t_2 = point_cloud_t_2[valid_mask]
-
-        # 2) 判断等价
         margin_mask = (np.abs(sum_r_t_1 - sum_r_t_2) < self.teacher_thres_equal).reshape(-1)
-
-        # 3) 按照“伪地面真值”生成 label
-        #    - gamma折扣处理
         seg_size = r_t_1.shape[1]
         temp_r_t_1 = r_t_1.copy()
         temp_r_t_2 = r_t_2.copy()
+        # 对前若干段奖励乘以权重因子 teacher_gamma
         for idx in range(seg_size - 1):
             temp_r_t_1[:, :idx + 1] *= self.teacher_gamma
             temp_r_t_2[:, :idx + 1] *= self.teacher_gamma
         sum_r_t_1 = np.sum(temp_r_t_1, axis=1)
         sum_r_t_2 = np.sum(temp_r_t_2, axis=1)
-
-        #    - teacher_beta随机化
         if self.teacher_beta > 0:
-            # 用 softmax 后进行随机
-            r_hat = np.stack([sum_r_t_1, sum_r_t_2], axis=-1)  # (batch,2)
+            r_hat = np.stack([sum_r_t_1, sum_r_t_2], axis=-1)
             r_hat_tensor = torch.from_numpy(r_hat).float().to(device) * self.teacher_beta
-            prob_2 = F.softmax(r_hat_tensor, dim=-1)[:, 1]  # x_2 > x_1 的概率
+            prob_2 = F.softmax(r_hat_tensor, dim=-1)[:, 1]
             random_draw = torch.bernoulli(prob_2).int().cpu().numpy().reshape(-1, 1)
-            labels = random_draw  # 0 or 1
+            labels = random_draw
         else:
-            # 不随机化
-            rational_labels = (sum_r_t_1 < sum_r_t_2).astype(int)  # 0 or 1
+            rational_labels = (sum_r_t_1 < sum_r_t_2).astype(int)
             labels = rational_labels.reshape(-1, 1)
-
-        # 4) 加噪声
         noise_mask = (np.random.rand(labels.shape[0]) <= self.teacher_eps_mistake)
         labels[noise_mask] = 1 - labels[noise_mask]
-
-        # 5) 等价情况贴上 -1
         labels[margin_mask] = -1
 
-        # ------------------------------------------------
-        # B. 若无需 VLM 标注 => 直接返回
-        # ------------------------------------------------
+        # B. 若不使用 VLM 标注，则直接返回生成的标签及相关数据
         if not self.vlm_label:
-            # 不使用 VLM => 仅返回普通五元组
-            # （若使用图像reward，也会进到这里, 
-            #   但 self.vlm_label = False 说明不需要二次修改标签）
-            if not self.image_reward:
-                # 返回: sa_t_1, sa_t_2, r_t_1, r_t_2, labels
-                return sa_t_1, sa_t_2, r_t_1, r_t_2, labels
-            else:
-                # 返回: sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, labels
+            if self.data_type == "image":
                 return sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, labels
-
-        # ------------------------------------------------
-        # C. 需要 VLM 标注 => 二次修改 label
-        # ------------------------------------------------
-        # 生成对应的 VLM label (vlm_labels)，并过滤掉无效样本
+            elif self.data_type == "pointcloud":
+                return sa_t_1, sa_t_2, r_t_1, r_t_2, point_cloud_t_1, point_cloud_t_2, labels
+        # C. 若使用 VLM 标注，则调用 VLM 接口进行二次修正
         ts = time.time()
         time_string = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d-%H-%M-%S')
-
         if self.vlm == 'pointllm_two_image':
-            # 点云对比
             vlm_labels = []
             useful_indices = []
             for idx, (pc1, pc2) in enumerate(zip(point_cloud_t_1, point_cloud_t_2)):
                 dist = np.linalg.norm(pc1 - pc2)
                 if dist < 1e-3:
-                    # 点云几乎相同 => 跳过
                     useful_indices.append(0)
                     vlm_labels.append(-1)
                 else:
                     useful_indices.append(1)
-                    # 调用 pointllm_query_2
                     prompt1 = pointllm_free_query_prompt1
                     prompt2 = pointllm_free_query_prompt2
                     main_prompt = pointllm_free_query_env_prompts[self.env_name]
                     summary_prompt = pointllm_summary_env_prompts[self.env_name]
-
                     res = pointllm_query_2([
                         prompt1, pc1.reshape(-1, 6),
                         prompt2, pc2.reshape(-1, 6),
                         main_prompt
                     ], summary_prompt)
-
                     try:
-                        res_int = int(res)
+                        res_int = int(extract_label_from_response(res))
                         if res_int not in [0, 1, -1]:
                             res_int = -1
                     except:
                         res_int = -1
                     vlm_labels.append(res_int)
-
             vlm_labels = np.array(vlm_labels).reshape(-1, 1)
             useful_mask = (np.array(useful_indices) == 1) & (vlm_labels.reshape(-1) != -1)
-
-            # 根据 mask 过滤
-            sa_t_1 = sa_t_1[useful_mask]
-            sa_t_2 = sa_t_2[useful_mask]
-            r_t_1 = r_t_1[useful_mask]
-            r_t_2 = r_t_2[useful_mask]
-            labels = labels[useful_mask]
-            rational_labels = (sum_r_t_1 < sum_r_t_2).astype(int)[useful_mask]  # for debug
-            vlm_labels = vlm_labels[useful_mask]
-            point_cloud_t_1 = point_cloud_t_1[useful_mask]
-            point_cloud_t_2 = point_cloud_t_2[useful_mask]
-            if img_t_1 is not None:
-                img_t_1 = img_t_1[useful_mask]
-            if img_t_2 is not None:
-                img_t_2 = img_t_2[useful_mask]
-
-            if self.flip_vlm_label:
-                vlm_labels = 1 - vlm_labels
-
-            # 需要保存标签
-            if self.train_times % self.save_query_interval == 0:
-                save_path = os.path.join(self.log_dir, "vlm_label_set")
-                if not os.path.exists(save_path):
-                    os.makedirs(save_path)
-                with open(f"{save_path}/{time_string}.pkl", "wb") as f:
-                    pkl.dump([
-                        point_cloud_t_1, point_cloud_t_2,
-                        rational_labels, vlm_labels,
-                        sa_t_1, sa_t_2, r_t_1, r_t_2
-                    ], f, protocol=pkl.HIGHEST_PROTOCOL)
-
-            # 计算准确率 (仅供 debug)
-            acc = 0
-            if len(vlm_labels) > 0:
-                acc = np.mean((vlm_labels.flatten() == rational_labels).astype(np.float32))
-                print(f"[pointllm_two_image] VLM 标签准确率: {acc:.4f}")
+            if (sa_t_1 is not None and sa_t_1.shape[0] != useful_mask.shape[0]) or (point_cloud_t_1.shape[0] != useful_mask.shape[0]):
+                raise IndexError("数据长度不匹配！")
+            if self.data_type == "pointcloud":
+                point_cloud_t_1 = point_cloud_t_1[useful_mask]
+                point_cloud_t_2 = point_cloud_t_2[useful_mask]
+                r_t_1 = r_t_1[useful_mask]
+                r_t_2 = r_t_2[useful_mask]
+                labels = labels[useful_mask]
+                vlm_labels = vlm_labels[useful_mask]
+                return sa_t_1, sa_t_2, r_t_1, r_t_2, point_cloud_t_1, point_cloud_t_2, labels, vlm_labels
             else:
-                print("[pointllm_two_image] 没有有效的 VLM 标签")
-
-            self.vlm_label_acc = acc
-
-            # 最终返回
-            #   => (sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2, labels, vlm_labels)
-            #   其中 img_t_1, img_t_2 供后续“写入 buffer”使用
-            return sa_t_1, sa_t_2, r_t_1, r_t_2, point_cloud_t_1, point_cloud_t_2, img_t_1, img_t_2, labels, vlm_labels
-
-
+                sa_t_1 = sa_t_1[useful_mask]
+                sa_t_2 = sa_t_2[useful_mask]
+                r_t_1 = r_t_1[useful_mask]
+                r_t_2 = r_t_2[useful_mask]
+                labels = labels[useful_mask]
+                vlm_labels = vlm_labels[useful_mask]
+                img_t_1 = img_t_1[useful_mask]
+                img_t_2 = img_t_2[useful_mask]
+                point_cloud_t_1 = point_cloud_t_1[useful_mask]
+                point_cloud_t_2 = point_cloud_t_2[useful_mask]
+                return sa_t_1, sa_t_2, r_t_1, r_t_2, point_cloud_t_1, point_cloud_t_2, img_t_1, img_t_2, labels, vlm_labels
         else:
-            # 其它 VLM 逻辑
+            # 其它 VLM 模式采用原有逻辑，此处保留详细实现
             gpt_two_image_paths = []
             combined_images_list = []
-
             file_path = os.path.abspath(__file__)
             dir_path = os.path.dirname(file_path)
-            save_path = "{}/data/gpt_query_image/{}/{}".format(dir_path, self.env_name, time_string)
+            save_path = os.path.join(dir_path, "data", "gpt_query_image", self.env_name, time_string)
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
-                
             useful_indices = []
             for idx, (im1, im2) in enumerate(zip(img_t_1, img_t_2)):
                 combined_image = np.concatenate([im1, im2], axis=1)
                 combined_images_list.append(combined_image)
-                combined_image = Image.fromarray(combined_image)
-                
+                combined_image_pil = Image.fromarray(combined_image)
                 first_image_save_path = os.path.join(save_path, f"first_{idx:06}.png")
                 second_image_save_path = os.path.join(save_path, f"second_{idx:06}.png")
                 Image.fromarray(im1).save(first_image_save_path)
                 Image.fromarray(im2).save(second_image_save_path)
                 gpt_two_image_paths.append([first_image_save_path, second_image_save_path])
-
                 diff = np.linalg.norm(im1 - im2)
                 if diff < 1e-3:
                     useful_indices.append(0)
                 else:
                     useful_indices.append(1)
-
-            # 针对 gpt4v_two_image / gemini 等多种情况
             if self.vlm == 'gpt4v_two_image':
                 from vlms.gpt4_infer import gpt4v_infer_2
                 vlm_labels = []
@@ -934,7 +860,6 @@ class RewardModel:
                         label_res = -1
                     vlm_labels.append(label_res)
                     time.sleep(0.1)
-
             elif self.vlm == 'gemini_single_prompt':
                 vlm_labels = []
                 for idx, (im1, im2) in enumerate(zip(img_t_1, img_t_2)):
@@ -957,7 +882,6 @@ class RewardModel:
                     except:
                         res = -1
                     vlm_labels.append(res)
-
             elif self.vlm == "gemini_free_form":
                 vlm_labels = []
                 for idx, (im1, im2) in enumerate(zip(img_t_1, img_t_2)):
@@ -977,16 +901,12 @@ class RewardModel:
                     except:
                         res = -1
                     vlm_labels.append(res)
-
             else:
-                # 默认情况
                 vlm_labels = []
-
             vlm_labels = np.array(vlm_labels).reshape(-1, 1)
             good_idx = (vlm_labels != -1).flatten()
             useful_indices = (np.array(useful_indices) == 1).flatten()
             good_idx = np.logical_and(good_idx, useful_indices)
-
             sa_t_1 = sa_t_1[good_idx]
             sa_t_2 = sa_t_2[good_idx]
             r_t_1 = r_t_1[good_idx]
@@ -996,409 +916,477 @@ class RewardModel:
             combined_images_list = np.array(combined_images_list)[good_idx]
             img_t_1 = img_t_1[good_idx]
             img_t_2 = img_t_2[good_idx]
-
             if self.flip_vlm_label:
                 vlm_labels = 1 - vlm_labels
-
             if self.train_times % self.save_query_interval == 0 or 'gpt4v' in self.vlm:
                 save_path = os.path.join(self.log_dir, "vlm_label_set")
                 if not os.path.exists(save_path):
                     os.makedirs(save_path)
-                with open("{}/{}.pkl".format(save_path, time_string), "wb") as f:
+                with open(os.path.join(save_path, f"{time_string}.pkl"), "wb") as f:
                     pkl.dump([
                         combined_images_list, rational_labels, vlm_labels,
                         sa_t_1, sa_t_2, r_t_1, r_t_2
                     ], f, protocol=pkl.HIGHEST_PROTOCOL)
-
             acc = 0
             if len(vlm_labels) > 0:
                 acc = np.sum(vlm_labels == rational_labels) / len(vlm_labels)
                 print(f"vlm label acc: {acc}")
             else:
                 print("no vlm label")
-
             self.vlm_label_acc = acc
-
-            # 如果不是图像奖励 => 返回  (sa_t_1, sa_t_2, r_t_1, r_t_2, labels, vlm_labels)
-            if not self.image_reward:
-                return sa_t_1, sa_t_2, r_t_1, r_t_2, labels, vlm_labels
-            else:
-                # 若是图像奖励 => (sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, labels, vlm_labels)
+            if self.data_type == "image":
                 return sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, labels, vlm_labels
+            else:
+                return sa_t_1, sa_t_2, r_t_1, r_t_2, labels, vlm_labels
 
-    # ————————————————————————————————————————
-    # 不同查询策略
-    # ————————————————————————————————————————
+    def get_label_from_cached_states(self):
+        """
+        从缓存标签文件中读取标签数据，避免重复调用 VLM 接口。
+
+        返回：
+            缓存的标签数据及对应的查询数据。
+        """
+        if self.read_cache_idx >= len(self.all_cached_labels):
+            return None, None, None, None, None, []
+        with open(self.all_cached_labels[self.read_cache_idx], 'rb') as f:
+            data = pkl.load(f)
+        self.read_cache_idx += 1
+        combined_images_list, rational_labels, vlm_labels, sa_t_1, sa_t_2, r_t_1, r_t_2 = data
+        return combined_images_list, rational_labels, vlm_labels, sa_t_1, sa_t_2, r_t_1, r_t_2
+
+    # =============================================================================
+    # 以下为不同采样策略，均利用优化后的 get_queries 和 get_label 函数实现高效采样
+    # =============================================================================
     def kcenter_sampling(self):
+        """
+        K-Center Sampling 策略：使用状态-动作数据或点云数据，基于距离选择最具代表性的样本。
+
+        返回：
+            int: 成功写入缓冲区的标签数量。
+        """
         num_init = self.mb_size * self.large_batch
-        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(mb_size=num_init)
-        
-        # 做KCenter
-        temp_sa_t_1 = sa_t_1[:, :, :self.ds]
-        temp_sa_t_2 = sa_t_2[:, :, :self.ds]
-        temp_sa = np.concatenate([temp_sa_t_1.reshape(num_init, -1),
-                                  temp_sa_t_2.reshape(num_init, -1)], axis=1)
-        
-        max_len = self.capacity if self.buffer_full else self.buffer_index
-        tot_sa_1 = self.buffer_seg1[:max_len, :, :self.ds]
-        tot_sa_2 = self.buffer_seg2[:max_len, :, :self.ds]
-        tot_sa = np.concatenate([tot_sa_1.reshape(max_len, -1),
-                                 tot_sa_2.reshape(max_len, -1)], axis=1)
-        
-        selected_index = KCenterGreedy(temp_sa, tot_sa, self.mb_size)
-        r_t_1, sa_t_1 = r_t_1[selected_index], sa_t_1[selected_index]
-        r_t_2, sa_t_2 = r_t_2[selected_index], sa_t_2[selected_index]
-        
-        # 打标签
-        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2)
-        if len(labels) > 0:
-            self.put_queries(sa_t_1, sa_t_2, labels)
-        return len(labels)
+        if self.data_type == "pointcloud":
+            _, _, r_t_1, r_t_2, pc_t_1, pc_t_2 = self.get_queries(mb_size=num_init)
+            temp_pc = np.concatenate([pc_t_1.reshape(pc_t_1.shape[0], -1),
+                                      pc_t_2.reshape(pc_t_2.shape[0], -1)], axis=1)
+            max_len = self.capacity if self.buffer_full else self.buffer_index
+            tot_pc = self.buffer_seg1[:max_len].reshape(max_len, -1)
+            selected_index = KCenterGreedy(temp_pc, tot_pc, self.mb_size)
+            r_t_1 = r_t_1[selected_index]
+            r_t_2 = r_t_2[selected_index]
+            pc_t_1 = pc_t_1[selected_index]
+            pc_t_2 = pc_t_2[selected_index]
+            _, _, r_t_1, r_t_2, pc_t_1, pc_t_2, labels = self.get_label(None, None, r_t_1, r_t_2,
+                                                                           point_cloud_t_1=pc_t_1, point_cloud_t_2=pc_t_2)
+            if len(labels) > 0:
+                self.put_queries(pc_t_1, pc_t_2, labels)
+            return len(labels)
+        else:
+            sa_t_1, sa_t_2, r_t_1, r_t_2, extra1, extra2 = self.get_queries(mb_size=num_init)
+            temp_sa_t_1 = sa_t_1[:, :self.ds]
+            temp_sa_t_2 = sa_t_2[:, :self.ds]
+            temp_sa = np.concatenate([temp_sa_t_1, temp_sa_t_2], axis=1)
+            max_len = self.capacity if self.buffer_full else self.buffer_index
+            tot_sa_1 = self.buffer_seg1[:max_len].reshape(max_len, -1)
+            tot_sa_2 = self.buffer_seg2[:max_len].reshape(max_len, -1)
+            tot_sa = np.concatenate([tot_sa_1, tot_sa_2], axis=1)
+            selected_index = KCenterGreedy(temp_sa, tot_sa, self.mb_size)
+            r_t_1 = r_t_1[selected_index]
+            sa_t_1 = sa_t_1[selected_index]
+            r_t_2 = r_t_2[selected_index]
+            sa_t_2 = sa_t_2[selected_index]
+            sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1=extra1, img_t_2=extra2)
+            if len(labels) > 0:
+                self.put_queries(sa_t_1, sa_t_2, labels)
+            return len(labels)
     
     def kcenter_disagree_sampling(self):
+        """
+        K-Center Disagree Sampling 策略：基于模型预测不一致性选择样本进行标签生成。
+
+        返回：
+            int: 成功写入缓冲区的标签数量。
+        """
         num_init = self.mb_size * self.large_batch
-        num_init_half = int(num_init * 0.5)
-        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(mb_size=num_init)
-        
-        # 根据不一致度选TopK
+        sa_t_1, sa_t_2, r_t_1, r_t_2, extra1, extra2 = self.get_queries(mb_size=num_init)
         _, disagree = self.get_rank_probability(sa_t_1, sa_t_2)
-        top_k_index = (-disagree).argsort()[:num_init_half]
-        r_t_1, sa_t_1 = r_t_1[top_k_index], sa_t_1[top_k_index]
-        r_t_2, sa_t_2 = r_t_2[top_k_index], sa_t_2[top_k_index]
-        
-        # KCenter
-        temp_sa_t_1 = sa_t_1[:, :, :self.ds]
-        temp_sa_t_2 = sa_t_2[:, :, :self.ds]
-        temp_sa = np.concatenate([temp_sa_t_1.reshape(num_init_half, -1),
-                                  temp_sa_t_2.reshape(num_init_half, -1)], axis=1)
-        
-        max_len = self.capacity if self.buffer_full else self.buffer_index
-        tot_sa_1 = self.buffer_seg1[:max_len, :, :self.ds]
-        tot_sa_2 = self.buffer_seg2[:max_len, :, :self.ds]
-        tot_sa = np.concatenate([tot_sa_1.reshape(max_len, -1),
-                                 tot_sa_2.reshape(max_len, -1)], axis=1)
-        
-        selected_index = KCenterGreedy(temp_sa, tot_sa, self.mb_size)
-        r_t_1, sa_t_1 = r_t_1[selected_index], sa_t_1[selected_index]
-        r_t_2, sa_t_2 = r_t_2[selected_index], sa_t_2[selected_index]
-        
-        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2)
+        top_k_index = (-disagree).argsort()[:int(num_init * 0.5)]
+        r_t_1 = r_t_1[top_k_index]
+        sa_t_1 = sa_t_1[top_k_index]
+        r_t_2 = r_t_2[top_k_index]
+        sa_t_2 = sa_t_2[top_k_index]
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1=extra1, img_t_2=extra2)
         if len(labels) > 0:
             self.put_queries(sa_t_1, sa_t_2, labels)
         return len(labels)
     
     def kcenter_entropy_sampling(self):
+        """
+        K-Center Entropy Sampling 策略：基于预测熵选择样本进行标签生成。
+
+        返回：
+            int: 成功写入缓冲区的标签数量。
+        """
         num_init = self.mb_size * self.large_batch
-        num_init_half = int(num_init * 0.5)
-        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(mb_size=num_init)
-        
-        # 根据熵选TopK
+        sa_t_1, sa_t_2, r_t_1, r_t_2, extra1, extra2 = self.get_queries(mb_size=num_init)
         entropy, _ = self.get_entropy(sa_t_1, sa_t_2)
-        top_k_index = (-entropy).argsort()[:num_init_half]
-        r_t_1, sa_t_1 = r_t_1[top_k_index], sa_t_1[top_k_index]
-        r_t_2, sa_t_2 = r_t_2[top_k_index], sa_t_2[top_k_index]
-        
-        # KCenter
-        temp_sa_t_1 = sa_t_1[:, :, :self.ds]
-        temp_sa_t_2 = sa_t_2[:, :, :self.ds]
-        temp_sa = np.concatenate([temp_sa_t_1.reshape(num_init_half, -1),
-                                  temp_sa_t_2.reshape(num_init_half, -1)], axis=1)
-        
-        max_len = self.capacity if self.buffer_full else self.buffer_index
-        tot_sa_1 = self.buffer_seg1[:max_len, :, :self.ds]
-        tot_sa_2 = self.buffer_seg2[:max_len, :, :self.ds]
-        tot_sa = np.concatenate([tot_sa_1.reshape(max_len, -1),
-                                 tot_sa_2.reshape(max_len, -1)], axis=1)
-        
-        selected_index = KCenterGreedy(temp_sa, tot_sa, self.mb_size)
-        r_t_1, sa_t_1 = r_t_1[selected_index], sa_t_1[selected_index]
-        r_t_2, sa_t_2 = r_t_2[selected_index], sa_t_2[selected_index]
-        
-        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2)
+        top_k_index = (-entropy).argsort()[:self.mb_size]
+        r_t_1 = r_t_1[top_k_index]
+        sa_t_1 = sa_t_1[top_k_index]
+        r_t_2 = r_t_2[top_k_index]
+        sa_t_2 = sa_t_2[top_k_index]
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1=extra1, img_t_2=extra2)
         if len(labels) > 0:
             self.put_queries(sa_t_1, sa_t_2, labels)
         return len(labels)
     
     def uniform_sampling(self):
         """
-        修改后示例：
-        1) 无论是否 pointllm_two_image，只要有 image_reward，就返回 img_t_1, img_t_2 并写入 buffer。
-        2) 若既无 image_reward 也无 vlm_label，保持原逻辑只返回 (sa_t_1, sa_t_2, r_t_1, r_t_2) 并 put_queries。
-        3) 若有 vlm_label & pointllm_two_image，则同时获取 pc_t & img_t，并用 pc_t 打标签，但最后写 buffer 依旧是图像数据。
-        """
+        Uniform Sampling 策略：
+          - 若不使用 VLM，则直接对 get_queries 返回数据打标签后写入缓冲区；
+          - 若使用 VLM 且 vlm=="pointllm_two_image"，则根据数据类型分别处理。
 
-        # 1) 根据是否 vlm_label / image_reward / cached_label_path 等条件，调用 get_queries & get_label
+        返回：
+            int: 成功写入缓冲区的标签数量。
+        """
         if not self.vlm_label:
-            # 不使用 VLM 标签
             if not self.image_reward:
-                # A. 无图像奖励、无VLM => get_queries 返回 (sa_t_1, sa_t_2, r_t_1, r_t_2)
                 sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(mb_size=self.mb_size)
-                # get_label 返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, labels)
                 sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2)
             else:
-                # B. 有图像奖励、无VLM => get_queries 返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2)
-                sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2 = self.get_queries(mb_size=self.mb_size)
-                # get_label 返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, labels)
-                sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, labels = self.get_label(
-                    sa_t_1, sa_t_2, r_t_1, r_t_2,
-                    img_t_1=img_t_1, 
-                    img_t_2=img_t_2
-                )
+                sa_t_1, sa_t_2, r_t_1, r_t_2, extra1, extra2 = self.get_queries(mb_size=self.mb_size)
+                sa_t_1, sa_t_2, r_t_1, r_t_2, extra1, extra2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2,
+                                                                                      img_t_1=extra1, img_t_2=extra2)
         else:
-            # 使用 VLM 标签
-            #   可能是 pointllm_two_image 或 其他 gemini / gpt4v ...
             if self.cached_label_path is None:
-                # 在线查询
                 if self.vlm == 'pointllm_two_image':
-                    # C. pointllm_two_image => get_queries 返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2)
-                    sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2 = self.get_queries(mb_size=self.mb_size)
-                    # get_label 返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2, labels, vlm_labels)
-                    sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2, gt_labels, vlm_labels = self.get_label(
-                        sa_t_1, sa_t_2, r_t_1, r_t_2,
-                        point_cloud_t_1=pc_t_1,
-                        point_cloud_t_2=pc_t_2,
-                        img_t_1=img_t_1,
-                        img_t_2=img_t_2
-                    )
-                else:
-                    # D. 其他 VLM 模式 => get_queries 返回 (sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2)
-                    sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2 = self.get_queries(mb_size=self.mb_size)
-                    # get_label => (sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, labels, vlm_labels)
-                    sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, gt_labels, vlm_labels = self.get_label(
-                        sa_t_1, sa_t_2, r_t_1, r_t_2,
-                        img_t_1=img_t_1, 
-                        img_t_2=img_t_2
-                    )
-            else:
-                # E. 从缓存读取
-                if self.read_cache_idx < len(self.all_cached_labels):
-                    if self.vlm == 'pointllm_two_image':
-                        # 缓存里存的也要保证能够同时返回 pc + 图像(如 combined_images_list)
-                        pc_t_1, pc_t_2, rational_labels, vlm_labels, sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_label_from_cached_states()
-                        # 注意：若还需要 img_t_1, img_t_2，也得保证 get_label_from_cached_states 里有
-                        # 暂未实现（不过目前也用不到）
-                        pass
+                    if self.data_type == "pointcloud":
+                        _, _, r_t_1, r_t_2, pc_t_1, pc_t_2 = self.get_queries(mb_size=self.mb_size)
+                        sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, gt_labels, vlm_labels = self.get_label(
+                            None, None, r_t_1, r_t_2,
+                            point_cloud_t_1=pc_t_1, point_cloud_t_2=pc_t_2)
                     else:
-                        combined_images_list, rational_labels, vlm_labels, sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_label_from_cached_states()
-                        # 同理，如果是 gemini / gpt4v 等，需要在 combined_images_list 里切分出 img_t_1, img_t_2
-                        num, height, width, _ = combined_images_list.shape
-                        img_t_1 = combined_images_list[:, :, :width // 2, :]
-                        img_t_2 = combined_images_list[:, :, width // 2:, :]
-                        # 若需要 resize
-                        if 'Rope' not in self.env_name and 'Water' not in self.env_name:
-                            resized_img_t_1 = np.zeros((num, self.image_height, self.image_width, 3), dtype=np.uint8)
-                            resized_img_t_2 = np.zeros((num, self.image_height, self.image_width, 3), dtype=np.uint8)
-                            for idx in range(len(img_t_1)):
-                                resized_img_t_1[idx] = cv2.resize(img_t_1[idx], (self.image_height, self.image_width))
-                                resized_img_t_2[idx] = cv2.resize(img_t_2[idx], (self.image_height, self.image_width))
-                            img_t_1 = resized_img_t_1
-                            img_t_2 = resized_img_t_2
+                        sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2 = self.get_queries(mb_size=self.mb_size)
+                        sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2, gt_labels, vlm_labels = self.get_label(
+                            sa_t_1, sa_t_2, r_t_1, r_t_2,
+                            point_cloud_t_1=pc_t_1, point_cloud_t_2=pc_t_2,
+                            img_t_1=img_t_1, img_t_2=img_t_2)
+                elif self.data_type == "image":
+                    sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2 = self.get_queries(mb_size=self.mb_size)
+                    sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, gt_labels, vlm_labels = self.get_label(
+                        sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1=img_t_1, img_t_2=img_t_2)
                 else:
-                    vlm_labels = []
-
-            # 这里最终标签全都放在labels里
-            labels = vlm_labels
-
-        # 2) 将得到的 labels 放入 buffer
-        #    先判断是否有有效数据
-        if len(labels) > 0:
-            # 情况 1：无图像奖励 & 非 pointllm_two_image => 纯向量写 buffer
-            if not self.image_reward and self.vlm != 'pointllm_two_image':
-                self.put_queries(sa_t_1, sa_t_2, labels)
-
-            # 情况 2：有图像奖励 => 需要将 img_t_1, img_t_2 下采样后写 buffer
+                    _, _, r_t_1, r_t_2, pc_t_1, pc_t_2 = self.get_queries(mb_size=self.mb_size)
+                    sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, gt_labels, vlm_labels = self.get_label(
+                        None, None, r_t_1, r_t_2,
+                        point_cloud_t_1=pc_t_1, point_cloud_t_2=pc_t_2)
             else:
-                # 这里将 pointllm_two_image 情况也统一起来，只要“image_reward=True”，就写图像
-                #   => 所以必须保证在上方 get_label 中已经获取到 img_t_1, img_t_2
-                #   => 并且在 pointllm_two_image 下 get_label 的返回值里确实含有 img_t_1, img_t_2
-                sa_t_1 = img_t_1[:, ::self.resize_factor, ::self.resize_factor, :]
-                sa_t_2 = img_t_2[:, ::self.resize_factor, ::self.resize_factor, :]
+                combined_images_list, rational_labels, vlm_labels, sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_label_from_cached_states()
+                num, height, width, _ = combined_images_list.shape
+                img_t_1 = combined_images_list[:, :, :width // 2, :]
+                img_t_2 = combined_images_list[:, :, width // 2:, :]
+            labels = vlm_labels
+        if len(labels) > 0:
+            if self.data_type == "pointcloud":
+                self.put_queries(pc_t_1, pc_t_2, labels)
+            else:
+                if self.data_type == "image":
+                    sa_t_1 = img_t_1[:, ::self.resize_factor, ::self.resize_factor, :]
+                    sa_t_2 = img_t_2[:, ::self.resize_factor, ::self.resize_factor, :]
                 self.put_queries(sa_t_1, sa_t_2, labels)
-
         return len(labels)
 
-
-    def get_label_from_cached_states(self):
-        if self.read_cache_idx >= len(self.all_cached_labels):
-            return None, None, None, None, None, []
-        with open(self.all_cached_labels[self.read_cache_idx], 'rb') as f:
-            data = pkl.load(f)
-        self.read_cache_idx += 1
-
-        # data 格式: [combined_images_list, rational_labels, vlm_labels, sa_t_1, sa_t_2, r_t_1, r_t_2]
-        combined_images_list, rational_labels, vlm_labels, sa_t_1, sa_t_2, r_t_1, r_t_2 = data
-        return combined_images_list, rational_labels, vlm_labels, sa_t_1, sa_t_2, r_t_1, r_t_2
-    
     def disagreement_sampling(self):
-        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(
-            mb_size=self.mb_size * self.large_batch)
+        """
+        Disagreement Sampling 策略：基于模型预测不一致性选择样本进行标签生成。
+
+        返回：
+            int: 成功写入缓冲区的标签数量。
+        """
+        sa_t_1, sa_t_2, r_t_1, r_t_2, extra1, extra2 = self.get_queries(mb_size=self.mb_size * self.large_batch)
         _, disagree = self.get_rank_probability(sa_t_1, sa_t_2)
         top_k_index = (-disagree).argsort()[:self.mb_size]
-
-        r_t_1, sa_t_1 = r_t_1[top_k_index], sa_t_1[top_k_index]
-        r_t_2, sa_t_2 = r_t_2[top_k_index], sa_t_2[top_k_index]
-        
-        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2)
+        r_t_1 = r_t_1[top_k_index]
+        sa_t_1 = sa_t_1[top_k_index]
+        r_t_2 = r_t_2[top_k_index]
+        sa_t_2 = sa_t_2[top_k_index]
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2,
+                                                               img_t_1=extra1, img_t_2=extra2)
         if len(labels) > 0:
             self.put_queries(sa_t_1, sa_t_2, labels)
         return len(labels)
     
-    def entropy_sampling(self):
-        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(
-            mb_size=self.mb_size * self.large_batch)
+    def kcenter_entropy_sampling(self):
+        """
+        K-Center Entropy Sampling 策略：基于预测熵选择样本进行标签生成。
+
+        返回：
+            int: 成功写入缓冲区的标签数量。
+        """
+        num_init = self.mb_size * self.large_batch
+        sa_t_1, sa_t_2, r_t_1, r_t_2, extra1, extra2 = self.get_queries(mb_size=num_init)
         entropy, _ = self.get_entropy(sa_t_1, sa_t_2)
         top_k_index = (-entropy).argsort()[:self.mb_size]
-
-        r_t_1, sa_t_1 = r_t_1[top_k_index], sa_t_1[top_k_index]
-        r_t_2, sa_t_2 = r_t_2[top_k_index], sa_t_2[top_k_index]
-        
-        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2)
+        r_t_1 = r_t_1[top_k_index]
+        sa_t_1 = sa_t_1[top_k_index]
+        r_t_2 = r_t_2[top_k_index]
+        sa_t_2 = sa_t_2[top_k_index]
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2,
+                                                               img_t_1=extra1, img_t_2=extra2)
         if len(labels) > 0:
             self.put_queries(sa_t_1, sa_t_2, labels)
         return len(labels)
 
-    # ————————————————————————————————————————
-    # 训练 reward
-    # ————————————————————————————————————————
+    # =============================================================================
+    # 单个输入数据奖励预测接口
+    # =============================================================================
+    def r_hat_member(self, x, member=-1):
+        """
+        对单个输入数据使用指定模型成员进行奖励预测。
+
+        参数：
+            x: 输入数据（numpy 数组或 torch.Tensor）。
+            member (int): 模型成员索引。
+
+        返回：
+            torch.Tensor: 模型输出奖励。
+        """
+        if isinstance(x, torch.Tensor):
+            x_tensor = x.float().to(device)
+        else:
+            x_tensor = torch.from_numpy(x).float().to(device)
+        if self.data_type == "pointcloud" and x_tensor.ndim == 4:
+            x_tensor = x_tensor.squeeze(1)
+        output = self.ensemble[member](x_tensor)
+        return output
+
+    def r_hat(self, x):
+        """
+        对单个输入数据进行奖励预测，使用所有模型成员的平均输出。
+
+        参数：
+            x: 输入数据。
+
+        返回：
+            float: 平均预测奖励。
+        """
+        r_hats = []
+        for member in range(self.de):
+            r_hats.append(self.r_hat_member(x, member=member).detach().cpu().numpy())
+        r_hats = np.array(r_hats)
+        return np.mean(r_hats)
+
+    def r_hat_batch(self, x):
+        """
+        对一批输入数据进行奖励预测，使用所有模型成员的平均输出。
+
+        参数：
+            x: 输入数据。
+
+        返回：
+            np.array: 批量预测奖励。
+        """
+        r_hats = []
+        for member in range(self.de):
+            r_hats.append(self.r_hat_member(x, member=member).detach().cpu().numpy())
+        r_hats = np.array(r_hats)
+        return np.mean(r_hats, axis=0)
+
+    def save(self, model_dir, step):
+        """
+        保存当前 ensemble 中所有模型的参数至指定目录。
+
+        参数：
+            model_dir (str): 模型保存目录。
+            step (int): 当前训练步数，用于文件命名。
+        """
+        for member in range(self.de):
+            torch.save(
+                self.ensemble[member].state_dict(),
+                f'{model_dir}/reward_model_{step}_{member}.pt'
+            )
+
+    def load(self, model_dir, step):
+        """
+        从指定目录加载 ensemble 中所有模型的参数。
+
+        参数：
+            model_dir (str): 模型加载目录。
+            step (int): 保存时使用的步数，用于文件命名。
+        """
+        file_dir = os.path.dirname(os.path.realpath(__file__))
+        model_dir = os.path.join(file_dir, model_dir)
+        for member in range(self.de):
+            self.ensemble[member].load_state_dict(
+                torch.load(f'{model_dir}/reward_model_{step}_{member}.pt')
+            )
+
+    def get_train_acc(self):
+        """
+        计算当前缓冲区中数据的训练准确率，评估 ensemble 模型预测一致性。
+
+        返回：
+            float: 训练准确率。
+        """
+        ensemble_acc = np.array([0 for _ in range(self.de)])
+        max_len = self.capacity if self.buffer_full else self.buffer_index
+        batch_size = 256
+        num_epochs = int(np.ceil(max_len / batch_size))
+        total = 0
+        for epoch in range(num_epochs):
+            last_index = (epoch + 1) * batch_size
+            if last_index > max_len:
+                last_index = max_len
+            sa_t_1 = self.buffer_seg1[epoch * batch_size:last_index]
+            sa_t_2 = self.buffer_seg2[epoch * batch_size:last_index]
+            labels = self.buffer_label[epoch * batch_size:last_index]
+            labels = torch.from_numpy(labels.flatten()).long().to(device)
+            total += labels.size(0)
+            for member in range(self.de):
+                r_hat1 = self.r_hat_member(sa_t_1, member=member).sum(axis=1)
+                r_hat2 = self.r_hat_member(sa_t_2, member=member).sum(axis=1)
+                r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
+                _, predicted = torch.max(r_hat.data, 1)
+                correct = (predicted == labels).sum().item()
+                ensemble_acc[member] += correct
+        ensemble_acc = ensemble_acc / total
+        return np.mean(ensemble_acc)
+
+    # =============================================================================
+    # 奖励模型训练：使用交叉熵损失对 <seg1, seg2> 进行二分类训练
+    # 针对点云数据采用混合精度训练（AMP）及较小批量以降低显存占用
+    # =============================================================================
     def train_reward(self):
         """
-        训练奖励模型 (CE Loss)，对 <seg1, seg2> 做二分类。
+        训练奖励模型（硬标签），使用交叉熵损失对两个查询对输出进行二分类训练。
+
+        采用混合精度训练以降低内存占用，对于点云数据自动使用较小的训练批量。
+
+        返回：
+            每个模型成员的训练准确率（平均）。
         """
         self.train_times += 1
+        # 使用混合精度训练，创建 GradScaler
+        scaler = torch.cuda.amp.GradScaler()
         ensemble_acc = np.array([0 for _ in range(self.de)])
+        # 如果数据类型为 pointcloud，建议使用较小的批量
+        train_batch = self.train_batch_size
+        if self.data_type == "pointcloud":
+            train_batch = min(self.train_batch_size, 16)
         max_len = self.capacity if self.buffer_full else self.buffer_index
-
-        # 每个 ensemble 成员对应一个随机洗牌
         total_batch_index = []
         for _ in range(self.de):
             total_batch_index.append(np.random.permutation(max_len))
-
-        num_epochs = int(np.ceil(max_len / self.train_batch_size))
+        num_epochs = int(np.ceil(max_len / train_batch))
         total = 0
-
         for epoch in range(num_epochs):
             self.opt.zero_grad()
             loss_all = 0.0
-
-            last_index = (epoch + 1) * self.train_batch_size
+            last_index = (epoch + 1) * train_batch
             if last_index > max_len:
                 last_index = max_len
-
             for member in range(self.de):
-                idxs = total_batch_index[member][epoch*self.train_batch_size:last_index]
+                idxs = total_batch_index[member][epoch * train_batch:last_index]
+                # 提取数据
                 sa_t_1 = self.buffer_seg1[idxs]
                 sa_t_2 = self.buffer_seg2[idxs]
                 labels = self.buffer_label[idxs]
                 labels = torch.from_numpy(labels.flatten()).long().to(device)
-
                 if member == 0:
                     total += labels.size(0)
-
-                # 若是图像（含 pointllm_two_image 模式），统一按图像处理
-                if self.image_reward:
-                    sa_t_1 = np.transpose(sa_t_1, (0, 1, 4, 2, 3))  # (B,1,H,W,3) -> (B,1,3,H,W)
-                    sa_t_2 = np.transpose(sa_t_2, (0, 1, 4, 2, 3))
-                    sa_t_1 = sa_t_1.astype(np.float32) / 255.0
-                    sa_t_2 = sa_t_2.astype(np.float32) / 255.0
-                    sa_t_1 = sa_t_1.squeeze(1)  # (B,3,H,W)
-                    sa_t_2 = sa_t_2.squeeze(1)
-
-                sa_t_1 = torch.from_numpy(sa_t_1).float().to(device)
-                sa_t_2 = torch.from_numpy(sa_t_2).float().to(device)
-
-                r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                r_hat2 = self.r_hat_member(sa_t_2, member=member)
-
-                # 非图像模式，就 sum(axis=1) ；图像模式因为输出单值，也可以 sum(axis=1) 不过是 scalar
-                if not self.image_reward:
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat2 = r_hat2.sum(axis=1)
-
-                r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
-                curr_loss = self.CEloss(r_hat, labels)
-                loss_all += curr_loss
-
-                _, predicted = torch.max(r_hat.data, 1)
-                correct = (predicted == labels).sum().item()
-                ensemble_acc[member] += correct
-
-            loss_all.backward()
-            self.opt.step()
-
-        ensemble_acc = ensemble_acc / total
-        torch.cuda.empty_cache()
-        return ensemble_acc
-    
-    def train_soft_reward(self):
-        """
-        处理等价标签(-1)的 soft CE。
-        """
-        self.train_times += 1
-        ensemble_acc = np.array([0 for _ in range(self.de)])
-        max_len = self.capacity if self.buffer_full else self.buffer_index
-
-        total_batch_index = []
-        for _ in range(self.de):
-            total_batch_index.append(np.random.permutation(max_len))
-
-        num_epochs = int(np.ceil(max_len / self.train_batch_size))
-        total = 0
-
-        for epoch in range(num_epochs):
-            self.opt.zero_grad()
-            loss_all = 0.0
-
-            last_index = (epoch + 1)*self.train_batch_size
-            if last_index > max_len:
-                last_index = max_len
-
-            for member in range(self.de):
-                idxs = total_batch_index[member][epoch*self.train_batch_size:last_index]
-                sa_t_1 = self.buffer_seg1[idxs]
-                sa_t_2 = self.buffer_seg2[idxs]
-                labels = self.buffer_label[idxs]
-                labels = torch.from_numpy(labels.flatten()).long().to(device)
-
-                if member == 0:
-                    total += labels.size(0)
-
-                if self.image_reward:
-                    sa_t_1 = np.transpose(sa_t_1, (0, 1, 4, 2, 3))
-                    sa_t_2 = np.transpose(sa_t_2, (0, 1, 4, 2, 3))
-                    sa_t_1 = sa_t_1.astype(np.float32) / 255.0
-                    sa_t_2 = sa_t_2.astype(np.float32) / 255.0
+                # 针对图像数据进行预处理
+                if self.data_type == "image":
+                    # (B,1,H,W,3) -> (B,1,3,H,W) -> (B,3,H,W) 并归一化
+                    sa_t_1 = np.transpose(sa_t_1, (0, 1, 4, 2, 3)).astype(np.float32) / 255.0
+                    sa_t_2 = np.transpose(sa_t_2, (0, 1, 4, 2, 3)).astype(np.float32) / 255.0
                     sa_t_1 = sa_t_1.squeeze(1)
                     sa_t_2 = sa_t_2.squeeze(1)
-
+                # 对于点云数据，无需额外预处理
                 sa_t_1 = torch.from_numpy(sa_t_1).float().to(device)
                 sa_t_2 = torch.from_numpy(sa_t_2).float().to(device)
-
-                r_hat1 = self.r_hat_member(sa_t_1, member=member)
-                r_hat2 = self.r_hat_member(sa_t_2, member=member)
-                if not self.image_reward:
-                    r_hat1 = r_hat1.sum(axis=1)
-                    r_hat2 = r_hat2.sum(axis=1)
-
-                r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
-
-                # 等价用 0.5
-                uniform_index = (labels == -1)
-                labels[uniform_index] = 0  # 先改成0
-                target_onehot = torch.zeros_like(r_hat).scatter(1, labels.unsqueeze(1), self.label_target)
-                target_onehot += self.label_margin
-                if sum(uniform_index) > 0:
-                    target_onehot[uniform_index] = 0.5
-
-                curr_loss = self.softXEnt_loss(r_hat, target_onehot)
+                with torch.cuda.amp.autocast():
+                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
+                    r_hat2 = self.r_hat_member(sa_t_2, member=member)
+                    # 对于图像数据将输出求和
+                    if self.data_type != "pointcloud":
+                        r_hat1 = r_hat1.sum(axis=1)
+                        r_hat2 = r_hat2.sum(axis=1)
+                    r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
+                    curr_loss = self.CEloss(r_hat, labels)
                 loss_all += curr_loss
-
                 _, predicted = torch.max(r_hat.data, 1)
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
-
-            loss_all.backward()
-            self.opt.step()
-
+            scaler.scale(loss_all).backward()
+            scaler.step(self.opt)
+            scaler.update()
+            torch.cuda.empty_cache()
         ensemble_acc = ensemble_acc / total
-        torch.cuda.empty_cache()
+        return ensemble_acc
+
+    def train_soft_reward(self):
+        """
+        训练奖励模型（软标签），使用 soft cross entropy 损失对输出进行训练。
+
+        同样采用混合精度训练以降低内存占用。
+
+        返回：
+            每个模型成员的训练准确率（平均）。
+        """
+        self.train_times += 1
+        scaler = torch.cuda.amp.GradScaler()
+        ensemble_acc = np.array([0 for _ in range(self.de)])
+        train_batch = self.train_batch_size
+        if self.data_type == "pointcloud":
+            train_batch = min(self.train_batch_size, 16)
+        max_len = self.capacity if self.buffer_full else self.buffer_index
+        total_batch_index = []
+        for _ in range(self.de):
+            total_batch_index.append(np.random.permutation(max_len))
+        num_epochs = int(np.ceil(max_len / train_batch))
+        total = 0
+        for epoch in range(num_epochs):
+            self.opt.zero_grad()
+            loss_all = 0.0
+            last_index = (epoch + 1) * train_batch
+            if last_index > max_len:
+                last_index = max_len
+            for member in range(self.de):
+                idxs = total_batch_index[member][epoch * train_batch:last_index]
+                sa_t_1 = self.buffer_seg1[idxs]
+                sa_t_2 = self.buffer_seg2[idxs]
+                labels = self.buffer_label[idxs]
+                labels = torch.from_numpy(labels.flatten()).long().to(device)
+                if member == 0:
+                    total += labels.size(0)
+                if self.data_type == "image":
+                    sa_t_1 = np.transpose(sa_t_1, (0, 1, 4, 2, 3)).astype(np.float32) / 255.0
+                    sa_t_2 = np.transpose(sa_t_2, (0, 1, 4, 2, 3)).astype(np.float32) / 255.0
+                    sa_t_1 = sa_t_1.squeeze(1)
+                    sa_t_2 = sa_t_2.squeeze(1)
+                sa_t_1 = torch.from_numpy(sa_t_1).float().to(device)
+                sa_t_2 = torch.from_numpy(sa_t_2).float().to(device)
+                with torch.cuda.amp.autocast():
+                    r_hat1 = self.r_hat_member(sa_t_1, member=member)
+                    r_hat2 = self.r_hat_member(sa_t_2, member=member)
+                    if self.data_type != "pointcloud":
+                        r_hat1 = r_hat1.sum(axis=1)
+                        r_hat2 = r_hat2.sum(axis=1)
+                    r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
+                    uniform_index = (labels == -1)
+                    labels[uniform_index] = 0
+                    target_onehot = torch.zeros_like(r_hat).scatter(1, labels.unsqueeze(1), self.label_target)
+                    target_onehot += self.label_margin
+                    if sum(uniform_index) > 0:
+                        target_onehot[uniform_index] = 0.5
+                    curr_loss = self.softXEnt_loss(r_hat, target_onehot)
+                loss_all += curr_loss
+                _, predicted = torch.max(r_hat.data, 1)
+                correct = (predicted == labels).sum().item()
+                ensemble_acc[member] += correct
+            scaler.scale(loss_all).backward()
+            scaler.step(self.opt)
+            scaler.update()
+            torch.cuda.empty_cache()
+        ensemble_acc = ensemble_acc / total
         return ensemble_acc

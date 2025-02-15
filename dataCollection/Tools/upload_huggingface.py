@@ -51,7 +51,7 @@ from huggingface_hub import HfApi, CommitOperationAdd
 HF_TOKEN = "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"  # 请填入你的真实 Hugging Face Token
 REPO_ID = "Battam/PLM-Finetune" # 你的HF仓库名, e.g. "Battam/PLM-Images"
 REPO_TYPE = "dataset"                # 如果是dataset类型, 否则可改 "model" ...
-BATCH_COMMIT_SIZE = 100               # 累计多少文件后自动commit
+BATCH_COMMIT_SIZE = 200               # 累计多少文件后自动commit
 SLEEP_BETWEEN_COMMITS = 1            # 每次commit后休眠秒数
 CHECK_EXISTS_BEFORE_UPLOAD = False    # 是否在上传前检查HF仓库中是否已存在同名文件
 
@@ -306,25 +306,29 @@ def main():
     # args=parser.parse_args()
     # run_upload(folder=args.folder, env_name=args.env_name, pattern=args.ext)
 
-    folder = f"dataCollection/Dataset"
-    env_name = f"Jsonl"
-    ext = f".jsonl"
+    # folder = f"dataCollection/Dataset"
+    # env_name = f"Jsonl_v2"
+    # ext = f".jsonl"
 
     # folder = f"data/pointclouds/metaworld_drawer-open-v2"
-    # env_name = f"PointClouds/metaworld_drawer-open-v2"
+    # env_name = f"PointClouds_v2/metaworld_drawer-open-v2"
     # ext = f".npy"
 
-    # folder = f"data/pointclouds/metaworld_handle-pull-side-v2"
-    # env_name = f"PointClouds/metaworld_handle-pull-side-v2"
+    # folder = f"data/pointclouds/metaworld_door-open-v2"
+    # env_name = f"PointClouds_v2/metaworld_door-open-v2"
     # ext = f".npy"
 
-    # folder = f"data/pointclouds/metaworld_peg-insert-side-v2"
-    # env_name = f"PointClouds/metaworld_peg-insert-side-v2"
+    # folder = f"data/pointclouds/metaworld_disassemble-v2"
+    # env_name = f"PointClouds_v2/metaworld_disassemble-v2"
     # ext = f".npy"
 
     # folder = f"data/pointclouds/metaworld_soccer-v2"
-    # env_name = f"PointClouds/metaworld_soccer-v2"
+    # env_name = f"PointClouds_v2/metaworld_soccer-v2"
     # ext = f".npy"
+
+    folder = f"/home/star/Yanjun/RL-VLM-F"
+    env_name = f""
+    ext = f".zip"
 
     run_upload(folder=folder, env_name=env_name, pattern=ext)
 

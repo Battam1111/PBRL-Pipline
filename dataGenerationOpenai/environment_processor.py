@@ -134,7 +134,34 @@ class EnvironmentProcessor:
             log(f"[EnvProcessor][{self.env_name}] 无可用配对，流程终止。")
             return
 
-        ts_str = time.strftime("%Y%m%d-%H%M%S")
+        # 接续用
+        # ts_str = time.strftime("%Y%m%d-%H%M%S")
+
+        # metaworld_door-open-v2 flip
+        # ts_str = "20250210-112040"
+
+        # metaworld_door-open-v2
+        # ts_str = "20250209-215022"
+
+        # metaworld_drawer-open-v2 flip
+        # ts_str = "20250210-112044"
+
+        # metaworld_drawer-open-v2
+        # ts_str = "20250209-182043"
+
+        # metaworld_soccer-v2 flip
+        # ts_str = "20250210-000046"
+
+        # metaworld_soccer-v2
+        # ts_str = "20250209-155732"
+
+        # metaworld_disassemble-v2 flip
+        # ts_str = "20250210-191654"
+
+        # metaworld_disassemble-v2
+        ts_str = "20250210-185030"
+
+
         out_dir = os.path.join("dataCollection", "Dataset", self.env_name, ts_str)
         os.makedirs(out_dir, exist_ok=True)
 

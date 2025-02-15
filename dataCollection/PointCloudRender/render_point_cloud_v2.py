@@ -458,9 +458,9 @@ if __name__ == "__main__":
         # "data/DensePointClouds/metaworld_soccer-v2",
         # "data/DensePointClouds/metaworld_drawer-open-v2",
         # "data/DensePointClouds/metaworld_door-open-v2",
-        # "data/DensePointClouds/metaworld_disassemble-v2",
+        "data/DensePointClouds/metaworld_disassemble-v2",
         # "data/DensePointClouds/metaworld_handle-pull-side-v2",
-        "data/DensePointClouds/metaworld_peg-insert-side-v2"
+        # "data/DensePointClouds/metaworld_peg-insert-side-v2"
     ]
 
     output_folder = "data/renderPointCloud"  # 输出图像保存根目录
@@ -469,14 +469,14 @@ if __name__ == "__main__":
     camera_up = [0, 1, 0]  # 相机上向量
     camera_directions = [
         # metaworld_soccer-v2, metaworld_drawer-open-v2, metaworld_door-open-v2, metaworld_disassemble-v2
-        # [1, -1, 1],
-        # [-1, -1, 1],
+        [1, -1, 1],
+        [-1, -1, 1],
         # metaworld_handle-pull-side-v2
         # [0, 0, 1],
         # [1, 0, 1],
         # metaworld_peg-insert-side-v2
-        [-1, 0, 0],
-        [1, 0, 0],
+        # [-1, 0, 0],
+        # [1, 0, 0],
     ]
     fov = 60.0              # 视场角（度）
     background_color = [1.0, 1.0, 1.0, 1.0]  # 背景颜色 (RGBA)，取值范围 [0,1]

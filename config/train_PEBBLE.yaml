@@ -8,21 +8,21 @@ experiment: PEBBLE  # 当前实验名称为PEBBLE
 segment: 50  # 分段的长度，决定从交互数据中抽取的片段长度
 activation: tanh  # 激活函数类型，这里使用双曲正切函数
 
-num_seed_steps: 1000  # 初始探索步数
-num_unsup_steps: 5000  # 无监督学习步数
+# num_seed_steps: 1000  # 初始探索步数
+# num_unsup_steps: 5000  # 无监督学习步数
 
-# num_seed_steps: 100  # 缩小初始探索步数
-# num_unsup_steps: 500  # 缩小无监督学习步数
-# num_interact: 500  # 缩小交互步数
+num_seed_steps: 100  # 缩小初始探索步数
+num_unsup_steps: 500  # 缩小无监督学习步数
+num_interact: 500  # 缩小交互步数
 
-num_interact: 5000  # 交互步数，用于与环境进行的交互学习
+# num_interact: 5000  # 交互步数，用于与环境进行的交互学习
 
 reward_lr: 0.0003  # 奖励模型的学习率
 reward_batch: 128  # 奖励模型每次训练的批量大小
 
-reward_update: 200  # 奖励模型的更新频率（原值200，适用于足球环境缩小为5）
+# reward_update: 200  # 奖励模型的更新频率（原值200，适用于足球环境缩小为5）
 
-# reward_update: 1  # 奖励模型更新频率进一步缩小
+reward_update: 1  # 奖励模型更新频率进一步缩小
 feed_type: 0  # 反馈类型的标识
 reset_update: 100  # 每100步重置奖励更新
 topK: 5  # 使用奖励中的Top K策略
@@ -40,9 +40,9 @@ teacher_eps_equal: 0  # 教师给出中性反馈的概率
 reward_schedule: 0  # 奖励模型更新的调度策略，0表示禁用
 
 # 训练配置
-num_train_steps: 1e6  # 训练的总步数
+# num_train_steps: 1e6  # 训练的总步数
 
-# num_train_steps: 1e4  # 缩小总训练步数
+num_train_steps: 1e4  # 缩小总训练步数
 replay_buffer_capacity: ${num_train_steps}  # 回放缓冲区的容量，等于训练步数
 
 # 评估配置
@@ -56,6 +56,10 @@ device: cuda  # 运行设备，GPU（cuda）
 log_frequency: 10000  # 日志记录的频率
 log_save_tb: false  # 是否保存TensorBoard格式的日志
 save_interval: ${num_interact}  # 保存模型的间隔步数
+
+# 点云相关
+reward_data_type: pointcloud  # 奖励模型数据类型（"image" 或 "pointcloud"）
+point_cloud_num_points: 8192  # 点云数据中点的数量
 
 # 视频录制
 save_video: false  # 是否保存交互过程的视频

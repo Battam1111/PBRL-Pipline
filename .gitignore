@@ -59,3 +59,4 @@ tests/
 bak/
 dataGenerationGemini/config.py
 dataGenerationOpenai/config.py
+DATA-ZIP

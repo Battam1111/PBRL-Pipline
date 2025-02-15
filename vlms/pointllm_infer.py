@@ -69,7 +69,9 @@ def init_model(model_name="/home/star/Yanjun/PointLLM/checkpoints/PointLLM_7B_v1
     global MODEL, TOKENIZER, POINT_BACKBONE_CONFIG, KEYWORDS, MM_USE_POINT_START_END, CONV_TEMPLATE
 
     # 测试模型
-    model_name = "YirongSun/pcllm_test1"
+    # model_name = "YirongSun/pcllm_test1"
+    # model_name = "YirongSun/plm_test2"
+    model_name = "YirongSun/plm_test2_fixed"
 
     # 防止重复初始化
     if MODEL is not None and TOKENIZER is not None:
@@ -182,7 +184,7 @@ def pointllm_query_1(query_list, temperature=1.0):
         print(f"[ERROR in pointllm_query_1] {e}")
         return -1
 
-def pointllm_query_2(query_list, summary_prompt, temperature=0.01):
+def pointllm_query_2(query_list, summary_prompt, temperature=1):
     """
     使用 PointLLM 比较两个点云，并对初始响应进行总结。
 
@@ -313,67 +315,68 @@ def pointllm_query_2(query_list, summary_prompt, temperature=0.01):
             print(traceback.format_exc())
             return -1
 
-        # 使用 summary_prompt 对初始响应进行总结
-        try:
-            summary_input = summary_prompt.format(initial_response)
-            conv = CONV_TEMPLATE.copy()
-            conv.append_message(conv.roles[0], summary_input)
-            conv.append_message(conv.roles[1], None)
-            summary_prompt_text = conv.get_prompt()
-            # print(f"Summary Prompt Text:\n{summary_prompt_text}")  # 调试信息
-        except Exception as e:
-            print(f"[ERROR in pointllm_query_2 - Building Summary Prompt] {e}")
-            print(traceback.format_exc())
-            return -1
+        # 使用 summary_prompt 对初始响应进行总结，废弃
+        # try:
+        #     summary_input = summary_prompt.format(initial_response)
+        #     conv = CONV_TEMPLATE.copy()
+        #     conv.append_message(conv.roles[0], summary_input)
+        #     conv.append_message(conv.roles[1], None)
+        #     summary_prompt_text = conv.get_prompt()
+        #     # print(f"Summary Prompt Text:\n{summary_prompt_text}")  # 调试信息
+        # except Exception as e:
+        #     print(f"[ERROR in pointllm_query_2 - Building Summary Prompt] {e}")
+        #     print(traceback.format_exc())
+        #     return -1
 
-        # 编码总结输入
-        try:
-            summary_inputs = TOKENIZER([summary_prompt_text])
-            summary_input_ids = torch.as_tensor(summary_inputs.input_ids).to(device)
-            # print(f"Summary Input IDs shape: {summary_input_ids.shape}")  # 调试信息
-        except Exception as e:
-            print(f"[ERROR in pointllm_query_2 - Tokenization for Summary] {e}")
-            print(traceback.format_exc())
-            return -1
+        # # 编码总结输入
+        # try:
+        #     summary_inputs = TOKENIZER([summary_prompt_text])
+        #     summary_input_ids = torch.as_tensor(summary_inputs.input_ids).to(device)
+        #     # print(f"Summary Input IDs shape: {summary_input_ids.shape}")  # 调试信息
+        # except Exception as e:
+        #     print(f"[ERROR in pointllm_query_2 - Tokenization for Summary] {e}")
+        #     print(traceback.format_exc())
+        #     return -1
 
-        # 总结生成
-        try:
-            with torch.inference_mode():
-                summary_output_ids = MODEL.generate(
-                    summary_input_ids,
-                    point_clouds=None,  # 总结阶段不传入点云信息
-                    do_sample=True,
-                    temperature=temperature,
-                    top_k=50,
-                    max_length=512,
-                    top_p=0.95,
-                    stopping_criteria=[stopping_criteria]
-                )
-                # print(f"Summary Output IDs shape: {summary_output_ids.shape}")  # 调试信息
-        except Exception as e:
-            print(f"[ERROR in pointllm_query_2 - Model Generate for Summary] {e}")
-            print(traceback.format_exc())
-            return -1
+        # # 总结生成
+        # try:
+        #     with torch.inference_mode():
+        #         summary_output_ids = MODEL.generate(
+        #             summary_input_ids,
+        #             point_clouds=None,  # 总结阶段不传入点云信息
+        #             do_sample=True,
+        #             temperature=temperature,
+        #             top_k=50,
+        #             max_length=512,
+        #             top_p=0.95,
+        #             stopping_criteria=[stopping_criteria]
+        #         )
+        #         # print(f"Summary Output IDs shape: {summary_output_ids.shape}")  # 调试信息
+        # except Exception as e:
+        #     print(f"[ERROR in pointllm_query_2 - Model Generate for Summary] {e}")
+        #     print(traceback.format_exc())
+        #     return -1
 
-        # 解码总结响应
-        try:
-            summary_input_token_len = summary_input_ids.shape[1]
-            summary_response = TOKENIZER.batch_decode(
-                summary_output_ids[:, summary_input_token_len:], skip_special_tokens=True
-            )[0].strip()
-            if summary_response.endswith(stop_str):
-                summary_response = summary_response[:-len(stop_str)].strip()
-            # print(f"Summary Response: {summary_response}")  # 调试信息
-        except Exception as e:
-            print(f"[ERROR in pointllm_query_2 - Decoding Summary Response] {e}")
-            print(traceback.format_exc())
-            return -1
+        # # 解码总结响应
+        # try:
+        #     summary_input_token_len = summary_input_ids.shape[1]
+        #     summary_response = TOKENIZER.batch_decode(
+        #         summary_output_ids[:, summary_input_token_len:], skip_special_tokens=True
+        #     )[0].strip()
+        #     if summary_response.endswith(stop_str):
+        #         summary_response = summary_response[:-len(stop_str)].strip()
+        #     # print(f"Summary Response: {summary_response}")  # 调试信息
+        # except Exception as e:
+        #     print(f"[ERROR in pointllm_query_2 - Decoding Summary Response] {e}")
+        #     print(traceback.format_exc())
+        #     return -1
 
         end = time.time()
         # 可以注释掉
         # print("Time elapsed: ", end - beg)
 
-        return summary_response
+        # return summary_response
+        return initial_response
 
     except Exception as e:
         print(f"[ERROR in pointllm_query_2 - General] {e}")

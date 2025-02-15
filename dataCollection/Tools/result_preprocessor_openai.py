@@ -459,9 +459,9 @@ def main():
          然后调用 merge_and_save() 生成最终合并结果。
     """
     # 示例文件路径，请根据实际情况进行修改
-    input_file_in = "dataCollection/Dataset/metaworld_soccer-v2/20250209-144201/batch_input_all.jsonl"
-    input_file_out = "dataCollection/Dataset/metaworld_soccer-v2/20250209-144201/batch_output_merged.jsonl"
-    merged_file = "dataCollection/Dataset/metaworld_soccer-v2_merged_F.json"
+    input_file_in = "dataCollection/Dataset/metaworld_disassemble-v2/20250210-185030/batch_input_all.jsonl"
+    input_file_out = "dataCollection/Dataset/metaworld_disassemble-v2/20250210-185030/metaworld_disassemble-v2.jsonl"
+    merged_file = "dataCollection/Dataset/metaworld_disassemble-v2_merged_F.json"
 
     print("[INFO] 开始解析输入文件……")
     input_map = parse_input_file(input_file_in)

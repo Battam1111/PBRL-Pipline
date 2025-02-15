@@ -199,19 +199,19 @@ def report_results(results: dict):
     dmatch = results["decision_match_count"]
     ddiff  = results["decision_diff_count"]
     print(f"\n决策(Decision)翻转一致数: {dmatch}, 不一致数: {ddiff}")
-    if ddiff>0:
-        print("以下 custom_id 的决策不一致(翻转规则下):")
-        for (cid, decB, decF) in results["decision_diffs"]:
-            print(f"  - {cid}: B={decB}, F={decF}")
+    # if ddiff>0:
+    #     print("以下 custom_id 的决策不一致(翻转规则下):")
+    #     for (cid, decB, decF) in results["decision_diffs"]:
+    #         print(f"  - {cid}: B={decB}, F={decF}")
 
-    asame = results["analysis_same_count"]
-    adiff= results["analysis_diff_count"]
-    print(f"\n回答文本(analysis)完全一致数: {asame}, 不一致数: {adiff}")
-    if adiff>0:
-        print("以下 custom_id 的回答文本有差异:")
-        diff_list = results["analysis_diff_cids"]
-        for cid in diff_list:
-            print(f"  - {cid}")
+    # asame = results["analysis_same_count"]
+    # adiff= results["analysis_diff_count"]
+    # print(f"\n回答文本(analysis)完全一致数: {asame}, 不一致数: {adiff}")
+    # if adiff>0:
+    #     print("以下 custom_id 的回答文本有差异:")
+    #     diff_list = results["analysis_diff_cids"]
+    #     for cid in diff_list:
+    #         print(f"  - {cid}")
 
     print("\n==== [翻转一致性检查] 报告结束 ====\n")
 
@@ -227,8 +227,17 @@ def main():
     你可在此调整 B_FILE, F_FILE 路径, 实现对其他环境的检查.
     """
 
-    B_FILE = "dataCollection/Dataset/metaworld_soccer-v2_merged_B.json"
-    F_FILE = "dataCollection/Dataset/metaworld_soccer-v2_merged_F.json"
+    # B_FILE = "dataCollection/Dataset/metaworld_soccer-v2_merged_B.json"
+    # F_FILE = "dataCollection/Dataset/metaworld_soccer-v2_merged_F.json"
+
+    # B_FILE = "dataCollection/Dataset/metaworld_drawer-open-v2_merged_B.json"
+    # F_FILE = "dataCollection/Dataset/metaworld_drawer-open-v2_merged_F.json"
+
+    # B_FILE = "dataCollection/Dataset/metaworld_door-open-v2_merged_B.json"
+    # F_FILE = "dataCollection/Dataset/metaworld_door-open-v2_merged_F.json"
+
+    B_FILE = "dataCollection/Dataset/metaworld_disassemble-v2_merged_B.json"
+    F_FILE = "dataCollection/Dataset/metaworld_disassemble-v2_merged_F.json"
 
     # 1) 加载
     b_map = load_merged_json(B_FILE)

@@ -150,19 +150,16 @@ for env_name, prompt in goal_env_prompts.items():
 
 # 通用模板定义
 pointllm_free_query_prompt1 = """
-Consider the following two point clouds:
-Point Cloud 1:
+Setup #1: 
 """
 
 pointllm_free_query_prompt2 = """
-Point Cloud 2:
+Setup #2:
 """
 
 pointllm_free_query_env_prompts = {}
 pointllm_free_query_template = """
-1. What is represented in Point Cloud 1?
-2. What is represented in Point Cloud 2?
-3. The objective is {}. Is there any difference between Point Cloud 1 and Point Cloud 2 in terms of achieving the objective?
+Target: {}\n\n1) Determine the elements in Setup #1 that drive success.\n2) Determine the elements in Setup #2 that drive success.\n3) Which setup provides more benefit, or no difference?\n\nRespond in one line:\n- \"0\" if #1 is better\n- \"1\" if #2 is better\n- \"-1\" if no difference.
 """
 
 # 根据任务生成模板
@@ -179,14 +176,15 @@ pointllm_summary_env_prompts = {}
 # 模板优化，明确逻辑层级并简化规则
 pointllm_summary_template = """
 Based on the text below to the questions:
-1. What is represented in Point Cloud 1?
-2. What is represented in Point Cloud 2?
-3. The objective is {}. Is there any difference between Point Cloud 1 and Point Cloud 2 in terms of achieving the objective?
+1. What is represented in Situation 1?
+2. What is represented in Situation 2?
+3. The objective is {}. Is there any meaningful difference between Situation 1 and Situation 2 in terms of achieving the objective?
 {}
 
-Is the objective better achieved in Point Cloud 1 or Point Cloud 2?
-Reply a single line of 0 if the goal is better achieved in Point Cloud 1, or 1 if it is better achieved in Point Cloud 2.
-Reply -1 if the text is unsure or there is no difference.
+\nAfter answering these questions, reply with a single digit and nothing else:\n
+- '0' if Situation 1 is better.\n
+- '1' if Situation 2 is better.\n
+- '-1' if unsure or no meaningful difference for the objective.\n
 """
 
 # 根据环境生成不同目标评估模板
