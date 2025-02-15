@@ -637,7 +637,7 @@ def main(cfg):
     # 设置视觉语言模型（VLM）的相关参数
     cfg.vlm_label = 1  # 使用VLM标签(0/1)
     cfg.vlm = 'pointllm_two_image'  # 使用名为`pointllm_two_image`的VLM模型
-    # cfg.vlm = 'gemini_free_form'  # 另一种可选的VLM模型（已注释）
+    # cfg.vlm = 'gpt4v_two_image'  # 另一种可选的VLM模型（已注释）
     
     # 图像奖励相关配置
     cfg.image_reward = 1  # 启用基于图像的奖励

@@ -60,4 +60,4 @@ bak/
 dataGenerationGemini/config.py
 dataGenerationOpenai/config.py
 DATA-ZIP/
-softgym/
+/home/star/Yanjun/RL-VLM-F/vlms/gpt4_infer.py
