@@ -18,8 +18,6 @@ reward_model.py
 4. 在训练奖励模型时，针对点云数据采用较小的批量（如16），并使用混合精度训练（AMP），
    以降低显存占用并提高效率。若仍遇内存碎片问题，可考虑设置环境变量 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True。
 
-作者：您的姓名
-日期：2023-… (更新日期)
 """
 
 import numpy as np
@@ -54,6 +52,36 @@ from extract import extract_label_from_response
 
 # 设置计算设备，优先使用 GPU
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+def robust_fix_image_array(img):
+    """
+    确保图像数组为 3 维 (H, W, C) 格式。
+    如果检测到额外的单一维度（例如 (1, H, W, C) 或 (1,1,H,W,C)），则移除这些单一维度；
+    如果无法自动剔除，则选择第一个样本。
+    
+    参数：
+        img (np.array): 待处理的图像数组。
+    返回：
+        np.array: 修正后的图像数组，形状为 (H, W, C) 或 (H, W)。
+    """
+    # 逐步去除前导的单一维度（例如 (1, H, W, C)）
+    while img.ndim > 3 and img.shape[0] == 1:
+        img = np.squeeze(img, axis=0)
+    # 如果仍然多余，但可以压缩非最后一维的单一维度，则进行处理
+    if img.ndim > 3:
+        new_dims = []
+        for i, d in enumerate(img.shape):
+            if i == img.ndim - 1:  # 保留最后一维（颜色通道）
+                new_dims.append(d)
+            else:
+                if d != 1:
+                    new_dims.append(d)
+        if len(new_dims) == 3:
+            img = img.reshape(new_dims)
+    # 如果仍然多余，则直接取第一个样本
+    if img.ndim > 3:
+        img = img[0]
+    return img
 
 # =============================================================================
 # 定义一个简单的 MLP 生成函数，用于非图像（向量）奖励模型
@@ -192,6 +220,25 @@ def compute_smallest_dist(obs, full_obs):
     return small_dists.unsqueeze(1)
 
 # =============================================================================
+# 辅助函数：修正图像数组形状，确保传入 PIL 时为 (H,W,3) 或 (H,W)
+# =============================================================================
+def fix_image_array(img):
+    """
+    检查并处理图像数组的形状，移除多余的单一维度。
+    例如：若输入为 (1, H, W, 3) 或 (1, 1, H, W, 3)，则将其压缩为 (H, W, 3)。
+    
+    参数：
+        img (np.array): 待处理的图像数组。
+
+    返回：
+        np.array: 修正后的图像数组，维度为 (H, W, 3) 或 (H, W)。
+    """
+    # 如果数组维度超过3且存在大小为1的多余轴，则调用 np.squeeze 进行压缩
+    if img.ndim > 3:
+        img = np.squeeze(img)
+    return img
+
+# =============================================================================
 # RewardModel 类
 # =============================================================================
 class RewardModel:
@@ -303,10 +350,15 @@ class RewardModel:
             # 图像数据格式： (capacity, 1, image_height, image_width, 3)
             self.buffer_seg1 = np.empty((self.capacity, 1, image_height, image_width, 3), dtype=np.uint8)
             self.buffer_seg2 = np.empty((self.capacity, 1, image_height, image_width, 3), dtype=np.uint8)
+            self.image_height = image_height
+            self.image_width = image_width
+            self.resize_factor = resize_factor
+
         elif self.data_type == "pointcloud":
             # 点云数据格式： (capacity, 1, point_cloud_num_points, 6)
             self.buffer_seg1 = np.empty((self.capacity, 1, point_cloud_num_points, 6), dtype=np.float32)
             self.buffer_seg2 = np.empty((self.capacity, 1, point_cloud_num_points, 6), dtype=np.float32)
+            
         else:
             # 默认使用状态-动作向量
             self.buffer_seg1 = np.empty((self.capacity, size_segment, self.ds + self.da), dtype=np.float32)
@@ -327,7 +379,7 @@ class RewardModel:
 
         # 针对点云数据，建议使用较小的训练批量以降低内存占用
         if self.data_type == "pointcloud":
-            self.train_batch_size = 8
+            self.train_batch_size = 32
         else:
             self.train_batch_size = 64 if not self.resnet else 32
 
@@ -419,7 +471,7 @@ class RewardModel:
                     n_layers=self.reward_model_layers,
                     activation=self.activation
                 )).float().to(device)
-            elif self.vlm == 'pointllm_two_image':
+            if not self.vlm_label:
                 if self.data_type == "pointcloud":
                     model = gen_point_cloud_net(num_points=self.point_cloud_num_points, input_dim=6, device=device, normalize=False)
                 else:
@@ -431,13 +483,25 @@ class RewardModel:
                     else:
                         model = gen_image_net2().float().to(device)
             else:
-                if not self.resnet:
-                    model = gen_image_net(
-                        self.image_height, self.image_width,
-                        self.conv_kernel_sizes, self.conv_n_channels, self.conv_strides
-                    ).float().to(device)
+                if self.vlm == 'pointllm_two_image':
+                    if self.data_type == "pointcloud":
+                        model = gen_point_cloud_net(num_points=self.point_cloud_num_points, input_dim=6, device=device, normalize=False)
+                    else:
+                        if not self.resnet:
+                            model = gen_image_net(
+                                self.image_height, self.image_width,
+                                self.conv_kernel_sizes, self.conv_n_channels, self.conv_strides
+                            ).float().to(device)
+                        else:
+                            model = gen_image_net2().float().to(device)
                 else:
-                    model = gen_image_net2().float().to(device)
+                    if not self.resnet:
+                        model = gen_image_net(
+                            self.image_height, self.image_width,
+                            self.conv_kernel_sizes, self.conv_n_channels, self.conv_strides
+                        ).float().to(device)
+                    else:
+                        model = gen_image_net2().float().to(device)
             self.ensemble.append(model)
             self.paramlst.extend(model.parameters())
         self.opt = torch.optim.Adam(self.paramlst, lr=self.lr)
@@ -709,16 +773,15 @@ class RewardModel:
                   img_t_1=None, img_t_2=None,
                   point_cloud_t_1=None, point_cloud_t_2=None):
         """
-        生成标签：首先根据真实奖励生成理性标签，再通过 VLM 接口进行二次修正（若启用）。
+        生成奖励标签：先根据真实奖励计算理性标签，再通过 VLM（若启用）进行二次修正。
 
         参数：
             sa_t_1, sa_t_2: 状态-动作序列（可选）。
-            r_t_1, r_t_2: 对应奖励序列。
+            r_t_1, r_t_2: 奖励序列。
             img_t_1, img_t_2: 图像数据（可选）。
             point_cloud_t_1, point_cloud_t_2: 点云数据（可选）。
-
         返回：
-            根据数据类型返回相应元组，包含各数据及生成标签。
+            根据配置返回不同数据元组（包括原始数据及生成的标签）。
         """
         # A. 根据真实奖励生成理性标签
         sum_r_t_1 = np.sum(r_t_1, axis=1)
@@ -744,7 +807,6 @@ class RewardModel:
         seg_size = r_t_1.shape[1]
         temp_r_t_1 = r_t_1.copy()
         temp_r_t_2 = r_t_2.copy()
-        # 对前若干段奖励乘以权重因子 teacher_gamma
         for idx in range(seg_size - 1):
             temp_r_t_1[:, :idx + 1] *= self.teacher_gamma
             temp_r_t_2[:, :idx + 1] *= self.teacher_gamma
@@ -763,13 +825,15 @@ class RewardModel:
         labels[noise_mask] = 1 - labels[noise_mask]
         labels[margin_mask] = -1
 
-        # B. 若不使用 VLM 标注，则直接返回生成的标签及相关数据
+        # B. 若不使用 VLM，则直接返回理性标签及相关数据
         if not self.vlm_label:
+            if not self.image_reward:
+                return sa_t_1, sa_t_2, r_t_1, r_t_2, labels
             if self.data_type == "image":
                 return sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2, labels
             elif self.data_type == "pointcloud":
                 return sa_t_1, sa_t_2, r_t_1, r_t_2, point_cloud_t_1, point_cloud_t_2, labels
-        # C. 若使用 VLM 标注，则调用 VLM 接口进行二次修正
+        # C. 使用 VLM 进行二次修正
         ts = time.time()
         time_string = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d-%H-%M-%S')
         if self.vlm == 'pointllm_two_image':
@@ -823,7 +887,7 @@ class RewardModel:
                 point_cloud_t_2 = point_cloud_t_2[useful_mask]
                 return sa_t_1, sa_t_2, r_t_1, r_t_2, point_cloud_t_1, point_cloud_t_2, img_t_1, img_t_2, labels, vlm_labels
         else:
-            # 其它 VLM 模式采用原有逻辑，此处保留详细实现
+            # 其它 VLM 模式：采用原有逻辑，这里对图像数据进行额外预处理以确保维度正确
             gpt_two_image_paths = []
             combined_images_list = []
             file_path = os.path.abspath(__file__)
@@ -833,13 +897,19 @@ class RewardModel:
                 os.makedirs(save_path)
             useful_indices = []
             for idx, (im1, im2) in enumerate(zip(img_t_1, img_t_2)):
+                im1 = robust_fix_image_array(im1)
+                im2 = robust_fix_image_array(im2)
                 combined_image = np.concatenate([im1, im2], axis=1)
                 combined_images_list.append(combined_image)
-                combined_image_pil = Image.fromarray(combined_image)
+                try:
+                    combined_image_pil = Image.fromarray(combined_image)
+                except Exception as e:
+                    print("Error converting combined image to PIL, combined_image.shape =", combined_image.shape)
+                    raise e
                 first_image_save_path = os.path.join(save_path, f"first_{idx:06}.png")
                 second_image_save_path = os.path.join(save_path, f"second_{idx:06}.png")
-                Image.fromarray(im1).save(first_image_save_path)
-                Image.fromarray(im2).save(second_image_save_path)
+                Image.fromarray(robust_fix_image_array(im1)).save(first_image_save_path)
+                Image.fromarray(robust_fix_image_array(im2)).save(second_image_save_path)
                 gpt_two_image_paths.append([first_image_save_path, second_image_save_path])
                 diff = np.linalg.norm(im1 - im2)
                 if diff < 1e-3:
@@ -865,9 +935,9 @@ class RewardModel:
                 for idx, (im1, im2) in enumerate(zip(img_t_1, img_t_2)):
                     res = gemini_query_1([
                         gemini_free_query_prompt1,
-                        Image.fromarray(im1),
+                        Image.fromarray(robust_fix_image_array(im1)),
                         gemini_free_query_prompt2,
-                        Image.fromarray(im2),
+                        Image.fromarray(robust_fix_image_array(im2)),
                         gemini_single_query_env_prompts[self.env_name],
                     ])
                     try:
@@ -887,9 +957,9 @@ class RewardModel:
                 for idx, (im1, im2) in enumerate(zip(img_t_1, img_t_2)):
                     res = gemini_query_2([
                         gemini_free_query_prompt1,
-                        Image.fromarray(im1),
+                        Image.fromarray(robust_fix_image_array(im1)),
                         gemini_free_query_prompt2,
-                        Image.fromarray(im2),
+                        Image.fromarray(robust_fix_image_array(im2)),
                         gemini_free_query_env_prompts[self.env_name]
                     ],
                         gemini_summary_env_prompts[self.env_name]
@@ -1035,7 +1105,8 @@ class RewardModel:
         sa_t_1 = sa_t_1[top_k_index]
         r_t_2 = r_t_2[top_k_index]
         sa_t_2 = sa_t_2[top_k_index]
-        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1=extra1, img_t_2=extra2)
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2,
+                                                               img_t_1=extra1, img_t_2=extra2)
         if len(labels) > 0:
             self.put_queries(sa_t_1, sa_t_2, labels)
         return len(labels)

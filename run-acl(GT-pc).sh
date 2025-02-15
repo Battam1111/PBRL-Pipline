@@ -1,14 +1,13 @@
-# PLM (Both Ours and PointLLM, but PointLLM 不做实验)
+# GT Preference PointCloud
 ### soccer，测试任务
 python train_PEBBLE.py \
     env=metaworld_soccer-v2 \
     seed=0 \
     exp_name=ACL-EXP \
     reward=learn_from_preference \
-    vlm_label=1 \
-    vlm=pointllm_two_image \
+    vlm_label=0 \
     reward_data_type=pointcloud \
-    image_reward=1 \
+    image_reward=0 \
     reward_batch=40 \
     segment=1 \
     teacher_eps_mistake=0 \
@@ -29,10 +28,9 @@ python train_PEBBLE.py \
     seed=0 \
     exp_name=ACL-EXP \
     reward=learn_from_preference \
-    vlm_label=1 \
-    vlm=pointllm_two_image \
+    vlm_label=0 \
     reward_data_type=pointcloud \
-    image_reward=1 \
+    image_reward=0 \
     reward_batch=40 \
     segment=1 \
     teacher_eps_mistake=0 \
@@ -52,10 +50,9 @@ python train_PEBBLE.py \
     seed=0 \
     exp_name=ACL-EXP \
     reward=learn_from_preference \
-    vlm_label=1 \
-    vlm=pointllm_two_image \
+    vlm_label=0 \
     reward_data_type=pointcloud \
-    image_reward=1 \
+    image_reward=0 \
     reward_batch=40 \
     segment=1 \
     teacher_eps_mistake=0 \
@@ -75,10 +72,9 @@ python train_PEBBLE.py \
     seed=0 \
     exp_name=ACL-EXP \
     reward=learn_from_preference \
-    vlm_label=1 \
-    vlm=pointllm_two_image \
+    vlm_label=0 \
     reward_data_type=pointcloud \
-    image_reward=1 \
+    image_reward=0 \
     reward_batch=40 \
     segment=1 \
     teacher_eps_mistake=0 \

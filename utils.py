@@ -16,8 +16,8 @@ from collections import deque
 from skimage.util.shape import view_as_windows
 from torch import nn
 from torch import distributions as pyd
-from softgym.softgym.registered_env import env_arg_dict, SOFTGYM_ENVS
-from softgym.softgym.utils.normalized_env import normalize
+# from softgym.softgym.registered_env import env_arg_dict, SOFTGYM_ENVS
+# from softgym.softgym.utils.normalized_env import normalize
 
 
 def make_env(cfg):
@@ -49,10 +49,10 @@ def make_env(cfg):
         # 捕获任何未匹配的情况，提示未找到的环境名称
         raise ValueError(f"Environment '{cfg.env}' is not supported or not found in gym or custom environments.")
 
-def make_softgym_env(cfg):
-    env_name = cfg.env.replace('softgym_','')
-    env_kwargs = env_arg_dict[env_name]
-    env = normalize(SOFTGYM_ENVS[env_name](**env_kwargs))
+# def make_softgym_env(cfg):
+#     env_name = cfg.env.replace('softgym_','')
+#     env_kwargs = env_arg_dict[env_name]
+#     env = normalize(SOFTGYM_ENVS[env_name](**env_kwargs))
 
     return env
 

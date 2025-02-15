@@ -1,12 +1,12 @@
-# GT Preference
+# GT Preference Image
 ### soccer，测试任务
 python train_PEBBLE.py \
     env=metaworld_soccer-v2 \
     seed=0 \
-    exp_name=reproduce \
+    exp_name=ACL-EXP \
     reward=learn_from_preference \
     vlm_label=0 \
-    vlm=gemini_free_form \
+    reward_data_type=image \
     image_reward=0 \
     reward_batch=40 \
     segment=1 \
@@ -26,10 +26,10 @@ python train_PEBBLE.py \
 python train_PEBBLE.py \
     env=metaworld_drawer-open-v2 \
     seed=0 \
-    exp_name=reproduce \
+    exp_name=ACL-EXP \
     reward=learn_from_preference \
     vlm_label=0 \
-    vlm=gemini_free_form \
+    reward_data_type=image \
     image_reward=0 \
     reward_batch=40 \
     segment=1 \
@@ -48,10 +48,10 @@ python train_PEBBLE.py \
 python train_PEBBLE.py \
     env=metaworld_door-open-v2 \
     seed=0 \
-    exp_name=reproduce \
+    exp_name=ACL-EXP \
     reward=learn_from_preference \
     vlm_label=0 \
-    vlm=gemini_free_form \
+    reward_data_type=image \
     image_reward=0 \
     reward_batch=40 \
     segment=1 \
@@ -70,10 +70,10 @@ python train_PEBBLE.py \
 python train_PEBBLE.py \
     env=metaworld_disassemble-v2 \
     seed=0 \
-    exp_name=reproduce \
+    exp_name=ACL-EXP \
     reward=learn_from_preference \
     vlm_label=0 \
-    vlm=gemini_free_form \
+    reward_data_type=image \
     image_reward=0 \
     reward_batch=40 \
     segment=1 \

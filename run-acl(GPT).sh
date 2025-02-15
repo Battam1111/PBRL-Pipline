@@ -3,7 +3,7 @@
 python train_PEBBLE.py \
     env=metaworld_soccer-v2 \
     seed=0 \
-    exp_name=reproduce \
+    exp_name=ACL-EXP \
     reward=learn_from_preference \
     vlm_label=1 \
     vlm=gpt4v_two_image \
@@ -27,7 +27,7 @@ python train_PEBBLE.py \
 python train_PEBBLE.py \
     env=metaworld_drawer-open-v2 \
     seed=0 \
-    exp_name=reproduce \
+    exp_name=ACL-EXP \
     reward=learn_from_preference \
     vlm_label=1 \
     vlm=gpt4v_two_image \
@@ -50,7 +50,7 @@ python train_PEBBLE.py \
 python train_PEBBLE.py \
     env=metaworld_door-open-v2 \
     seed=0 \
-    exp_name=reproduce \
+    exp_name=ACL-EXP \
     reward=learn_from_preference \
     vlm_label=1 \
     vlm=gpt4v_two_image \
@@ -73,7 +73,7 @@ python train_PEBBLE.py \
 python train_PEBBLE.py \
     env=metaworld_disassemble-v2 \
     seed=0 \
-    exp_name=reproduce \
+    exp_name=ACL-EXP \
     reward=learn_from_preference \
     vlm_label=1 \
     vlm=gpt4v_two_image \
