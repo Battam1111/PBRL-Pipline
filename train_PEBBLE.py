@@ -22,7 +22,7 @@ from collections import deque
 
 from logger import Logger            # 日志记录模块
 from replay_buffer import ReplayBuffer  # 回放缓冲区模块
-from reward_model import RewardModel    # 奖励模型模块（已经适配点云支持）
+from RewardModel.reward_model import RewardModel    # 奖励模型模块（已经适配点云支持）
 from reward_model_score import RewardModelScore  # 基于分数的奖励模型模块
 from prompt import clip_env_prompts     # 用于设置CLIP提示的环境变量
 # 数据保存相关模块（图像、点云）
@@ -127,14 +127,17 @@ class Workspace(object):
         #     second_output_dir="/home/star/Yanjun/RL-VLM-F/data/DensePointClouds",
         # )
 
-        # 初始化回放缓冲区，注意：若使用 pointllm_two_image，则同时存储图像和点云
+        # 根据配置参数 reward_data_type 决定回放缓冲区存储方式：
+        # 如果 reward_data_type 为 "image"，则启用图像存储；
+        # 如果 reward_data_type 为 "pointcloud"，则启用点云存储。
         self.replay_buffer = ReplayBuffer(
             self.env.observation_space.shape,
             self.env.action_space.shape,
-            int(cfg.replay_buffer_capacity) if not self.cfg.image_reward else 200000,
+            # 根据具体情况可以调整容量，这里保持一致
+            int(cfg.replay_buffer_capacity) if cfg.reward_data_type == "pointcloud" else 200000,
             self.device,
-            store_image=self.cfg.image_reward,
-            store_point_cloud=(self.cfg.vlm == 'pointllm_two_image'),
+            store_image=True,
+            store_point_cloud=(cfg.reward_data_type == "pointcloud" or self.cfg.vlm == 'pointllm_two_image'),
             image_size=image_height
         )
         
@@ -500,7 +503,7 @@ class Workspace(object):
                 render_image = self.env.render(mode='rgb_array')
 
             # 当使用 pointllm_two_image 模式时，同时获取点云数据
-            if self.cfg.vlm == 'pointllm_two_image':
+            if self.cfg.vlm == 'pointllm_two_image' or self.cfg.reward_data_type == "pointcloud":
                 point_cloud = self.env.render(mode='pointcloud')
 
             # 保存图像数据（保存器相关代码可根据需要启用）
@@ -577,18 +580,21 @@ class Workspace(object):
                 self.reward_model.add_data(obs, action, reward, done, img=render_image, point_cloud=point_cloud[0] if point_cloud is not None else None)
 
             # 将数据添加到回放缓冲区
-            if self.cfg.image_reward and (self.reward not in ["gt_task_reward", "sparse_task_reward"]):
+            if (self.cfg.reward_data_type == "image" or self.cfg.reward_data_type == "pointcloud") and (self.reward not in ["gt_task_reward", "sparse_task_reward"]):
+                # 如果使用图像数据作为奖励输入，则传入预处理后的图像数据
                 self.replay_buffer.add(
                     obs, action, reward_hat, next_obs, done, done_no_max,
                     image=render_image[::self.resize_factor, ::self.resize_factor, :] if render_image is not None else None,
-                    point_cloud=point_cloud[0] if point_cloud is not None else None,
+                    point_cloud=point_cloud[0] if point_cloud is not None else None
                 )
             else:
+                # 其它情况，均不传入图像与点云数据
                 self.replay_buffer.add(
                     obs, action, reward_hat, next_obs, done, done_no_max,
                     image=None,
-                    point_cloud=point_cloud[0] if point_cloud is not None else None
+                    point_cloud=None
                 )
+
 
             obs = next_obs
             episode_step += 1
@@ -632,11 +638,12 @@ def main(cfg):
     cfg.exp_name = 'reproduce'  
     
     # 设置奖励类型为基于偏好学习
-    cfg.reward = 'learn_from_preference'  
+    cfg.reward = 'learn_from_preference'
     
     # 设置视觉语言模型（VLM）的相关参数
     cfg.vlm_label = 1  # 使用VLM标签(0/1)
     cfg.vlm = 'pointllm_two_image'  # 使用名为`pointllm_two_image`的VLM模型
+    # cfg.vlm = ''  # 不使用vlm
     # cfg.vlm = 'gpt4v_two_image'  # 另一种可选的VLM模型（已注释）
     
     # 图像奖励相关配置

@@ -57,7 +57,7 @@ log_save_tb: false  # 是否保存TensorBoard格式的日志
 save_interval: ${num_interact}  # 保存模型的间隔步数
 
 # 点云相关（除了PLM外都设置image）
-reward_data_type: pointcloud  # 奖励模型数据类型（"image" 或 "pointcloud"）
+reward_data_type: image  # 奖励模型数据类型（"image" 或 "pointcloud"或"GT"）
 point_cloud_num_points: 8192  # 点云数据中点的数量
 
 # 视频录制

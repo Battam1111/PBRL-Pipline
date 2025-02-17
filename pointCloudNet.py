@@ -269,6 +269,8 @@ class PointCloudNet(nn.Module):
         x = F.relu(self.norm5(self.fc2(x)))  # (N, 128)
         x = self.dropout(x)
         out = self.fc3(x)  # (N, 1)
+        # 对最终输出做 clamp 限幅，保证输出稳定
+        out = torch.clamp(out, -100.0, 100.0)
         return out
 
 # -----------------------------

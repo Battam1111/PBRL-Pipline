@@ -71,7 +71,8 @@ def init_model(model_name="/home/star/Yanjun/PointLLM/checkpoints/PointLLM_7B_v1
     # 测试模型
     # model_name = "YirongSun/pcllm_test1"
     # model_name = "YirongSun/plm_test2"
-    model_name = "YirongSun/plm_test2_fixed"
+    # model_name = "YirongSun/plm_test2_fixed"
+    model_name = "YirongSun/plm_test3"
 
     # 防止重复初始化
     if MODEL is not None and TOKENIZER is not None:
