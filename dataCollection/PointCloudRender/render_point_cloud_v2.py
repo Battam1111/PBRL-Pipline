@@ -456,14 +456,17 @@ if __name__ == "__main__":
     # 输入路径示例：每个路径既可为单个文件，也可为文件夹
     input_paths = [
         # "data/DensePointClouds/metaworld_soccer-v2",
+        "data/pointclouds/metaworld_soccer-v2",
         # "data/DensePointClouds/metaworld_drawer-open-v2",
         # "data/DensePointClouds/metaworld_door-open-v2",
-        "data/DensePointClouds/metaworld_disassemble-v2",
+        # "data/DensePointClouds/metaworld_disassemble-v2",
         # "data/DensePointClouds/metaworld_handle-pull-side-v2",
         # "data/DensePointClouds/metaworld_peg-insert-side-v2"
     ]
 
-    output_folder = "data/renderPointCloud"  # 输出图像保存根目录
+    # output_folder = "data/renderPointCloud"  # 输出图像保存根目录
+    output_folder = "data/renderPointCloud8192"  # 输出图像保存根目录
+
     width = 400     # 渲染图像宽度
     height = 400    # 渲染图像高度
     camera_up = [0, 1, 0]  # 相机上向量

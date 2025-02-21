@@ -143,7 +143,7 @@ class ReplayBuffer(object):
                 obses = self.obses[start:end]
                 acts = self.actions[start:end]
                 inputs = np.concatenate([obses, acts], axis=-1)
-            pred_reward = predictor.r_hat_batch(inputs)
+            pred_reward = predictor.trainer.r_hat_batch(inputs)
             pred_reward = pred_reward.reshape(-1, 1)
             self.rewards[start:end] = pred_reward
 
