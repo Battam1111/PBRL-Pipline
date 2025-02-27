@@ -161,7 +161,6 @@ class DirectOpenAIManager:
 class OpenAIBatchHandler(BaseOpenAIHandler):
     def __init__(self, api_key: str, key_index: int):
         super().__init__(api_key, key_index)
-        # 文件上传时不指定 Content-Type，由 requests 自动设置 multipart/form-data
         self.headers = {"Authorization": f"Bearer {self.api_key}"}
 
     def upload_batch_file(self, file_path: str) -> str:
@@ -260,7 +259,6 @@ class MultiOpenAIBatchManager:
         with self.lock:
             key = handler.name_tag()
             current = self.handler_token_counts.get(key, 0)
-            # 此处设定每个 API Key 预留上限（示例为 10000 tokens，可根据实际情况调整）
             if current + tokens <= 10000:
                 self.handler_token_counts[key] = current + tokens
                 log(f"[MultiOpenAIBatchManager] {key} 预留 token {tokens} 成功，当前累计 token 数 {self.handler_token_counts[key]}。")

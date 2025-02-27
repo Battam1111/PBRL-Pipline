@@ -3,6 +3,7 @@ import base64
 import os
 
 # 固定api
+os.environ['OPENAI_API_KEY'] = ""
 
 list_of_api_keys = [
    os.environ['OPENAI_API_KEY'],
