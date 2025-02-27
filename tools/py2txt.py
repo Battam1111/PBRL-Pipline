@@ -85,7 +85,8 @@ def main():
     指定目标目录和输出文件路径，调用函数执行文件搜集与内容输出的全过程。
     """
     # 指定要遍历的目标目录路径，请根据实际需求进行修改。
-    target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationOpenai")
+    # target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationOpenai")
+    target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationOpenai-DataRewrite")
     # target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationGemini")
     # target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataCollection/DataSaver")
     # 指定最终输出的 .txt 文件路径，请根据实际需求进行修改。
