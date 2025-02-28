@@ -65,3 +65,6 @@ None
 dataGenerationOpenai-DataRewrite/config.py
 dataGenerationOpenai-DataRewrite/rewriteData
 dataGenerationOpenai-DataRewrite/rewriteOutput
+dataGenerationDeepseek-DataRewrite/config.py
+dataGenerationDeepseek-DataRewrite/rewriteOutput
+dataGenerationDeepseek-DataRewrite/rewriteData
