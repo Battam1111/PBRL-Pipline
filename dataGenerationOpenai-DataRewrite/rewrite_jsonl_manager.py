@@ -14,8 +14,10 @@ rewrite_jsonl_manager.py
   - 合并输出文件（按 custom_id 排序）
   - Direct 模式结果的合并
   - 将改写结果合并回原始数据集，并输出新的 JSON 文件
-"""
 
+【关键改动】在 merge_results_into_dataset() 中增加参数 base_name（原始 JSON 数据文件基本名），
+以确保 custom_id 构造与任务生成时一致，从而正确合并改写结果。
+"""
 import os
 import json
 import copy
@@ -130,7 +132,7 @@ class RewriteJSONLManager:
                         log(f"[RewriteJSONLManager] 解析行失败：{e}")
         def parse_idx(custom_id: str) -> int:
             try:
-                # 假设 custom_id 格式为 fileName_index_conversationIndex
+                # 假设 custom_id 格式为 baseName_index_conversationIndex
                 return int(custom_id.split("_")[-1])
             except:
                 return 999999
@@ -170,14 +172,17 @@ class RewriteJSONLManager:
                 wf.write(json.dumps(merged_results[cid], ensure_ascii=False) + "\n")
         log(f"[RewriteJSONLManager] Direct 模式合并结果完成，输出文件：{final_out}")
 
-    def merge_results_into_dataset(self, result_file: str, original_data: list, output_json: str) -> None:
+    def merge_results_into_dataset(self, result_file: str, original_data: list, output_json: str, base_name: str) -> None:
         """
         将改写结果合并回原始数据集。读取 result_file 中的结果，
         并将每个任务的改写结果（response 字段）映射到原始数据中对应的 "gpt" conversation，
-       在该 conversation 中增加新字段 "rewritten" 保存改写后的文本。
+        在该 conversation 中增加新字段 "rewritten" 保存改写后的文本。
+        
+        为确保 custom_id 与任务生成时一致，使用 base_name 构造 custom_id：
+          custom_id = f"{base_name}_{item_index}_{conversation_index}"
+        
         最后将合并后的数据输出为新的 JSON 文件。
         """
-        # 构建 custom_id -> rewritten_text 的映射（假设返回结果中在 response 内的 choices[0].message.content）
         rewritten_map = {}
         with open(result_file, "r", encoding="utf-8") as rf:
             for line in rf:
@@ -190,12 +195,12 @@ class RewriteJSONLManager:
                         rewritten_map[cid] = content
                 except Exception as e:
                     log(f"[RewriteJSONLManager] 解析改写结果失败：{e}")
-        # 将改写结果写入原始数据中
+        # 根据 base_name 和索引构造 custom_id
         for idx, item in enumerate(original_data):
             convs = item.get("conversations", [])
             for j, conv in enumerate(convs):
                 if conv.get("from") == "gpt":
-                    custom_id = f"{os.path.splitext(os.path.basename(result_file))[0].replace('_output_merged','')}_{idx}_{j}"
+                    custom_id = f"{base_name}_{idx}_{j}"
                     if custom_id in rewritten_map:
                         conv["rewritten"] = rewritten_map[custom_id]
         os.makedirs(os.path.dirname(output_json), exist_ok=True)

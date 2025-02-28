@@ -9,7 +9,6 @@ openai_client.py
 
 支持多 API Key 协同调用，内部采用重试、指数退避及断点续传机制，确保任务处理高效且鲁棒。
 """
-
 import os
 import time
 import json
@@ -409,7 +408,6 @@ class MultiOpenAIBatchManager:
             futures[executor.submit(self._poll_job, job)] = job_key
             log(f"[MultiOpenAIBatchManager] 提交任务 {job_key}，token 数 {job['token_count']}。")
             return True
-
         pending_keys = list(jobs.keys())
         idx = 0
         while idx < len(pending_keys):

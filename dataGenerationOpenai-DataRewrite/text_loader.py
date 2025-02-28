@@ -6,7 +6,6 @@ text_loader.py
 本模块用于加载输入文本样本。
 假设输入文件中每一行均为一个文本描述。
 """
-
 import os
 from utils import log
 
