@@ -86,7 +86,8 @@ def main():
     """
     # 指定要遍历的目标目录路径，请根据实际需求进行修改。
     # target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationOpenai")
-    target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationOpenai-DataRewrite")
+    # target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationOpenai-DataRewrite")
+    target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationDeepseek-DataRewrite")
     # target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataGenerationGemini")
     # target_directory = Path("/home/star/Yanjun/RL-VLM-F/dataCollection/DataSaver")
     # 指定最终输出的 .txt 文件路径，请根据实际需求进行修改。

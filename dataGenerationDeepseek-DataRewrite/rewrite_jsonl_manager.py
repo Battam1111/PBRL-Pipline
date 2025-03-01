@@ -60,7 +60,8 @@ class RewriteJSONLManager:
                                 "content": user_message
                             }
                         ],
-                        "max_tokens": 2000
+                        "max_tokens": 2000,
+                        "temperature": 1.0
                     }
                 }
                 outf.write(json.dumps(data, ensure_ascii=False) + "\n")
