@@ -8,8 +8,6 @@
 import os
 
 # 从环境变量中加载 OpenAI API 配置（生产中请勿在代码中硬编码敏感信息）
-# OPENAI_API_KEY = "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"
-OPENAI_API_KEY = "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"
 
 if not OPENAI_API_KEY:
     raise ValueError("请设置环境变量 OPENAI_API_KEY！")
