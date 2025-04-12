@@ -21,7 +21,6 @@ rewrite_jsonl_manager.py
 import os
 import json
 import copy
-import re
 from config import SYSTEM_PROMPT_TEXT, MODEL, USER_MESSAGE_TEMPLATE
 from utils import log
 
@@ -133,7 +132,6 @@ class RewriteJSONLManager:
                         log(f"[RewriteJSONLManager] 解析行失败：{e}")
         def parse_idx(custom_id: str) -> int:
             try:
-                # 假设 custom_id 格式为 baseName_index_conversationIndex
                 return int(custom_id.split("_")[-1])
             except:
                 return 999999
@@ -196,7 +194,6 @@ class RewriteJSONLManager:
                         rewritten_map[cid] = content
                 except Exception as e:
                     log(f"[RewriteJSONLManager] 解析改写结果失败：{e}")
-        # 根据 base_name 和索引构造 custom_id
         for idx, item in enumerate(original_data):
             convs = item.get("conversations", [])
             for j, conv in enumerate(convs):

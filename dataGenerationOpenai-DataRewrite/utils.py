@@ -7,7 +7,6 @@ utils.py
   - 统一日志输出函数（可扩展为 logging 模块）
   - 通用重试装饰器与 robust_request 函数
 """
-
 import time
 import functools
 import requests
@@ -16,7 +15,7 @@ def log(message: str):
     """统一日志输出函数，可根据需要扩展为 logging 模块。"""
     print(message)
 
-def retry(exceptions, tries=5, delay=3, backoff=2):
+def retry(exceptions, tries=99999, delay=3, backoff=2):
     """
     装饰器：对被装饰函数实现通用重试机制。
     

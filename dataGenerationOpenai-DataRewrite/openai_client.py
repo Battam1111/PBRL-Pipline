@@ -16,7 +16,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Callable
 import requests
-from config import API_URL, MODEL, SYSTEM_PROMPT_TEXT, BATCH_API_URL, FILES_API_URL, OPENAI_API_KEYS
+from config import API_URL, MODEL, SYSTEM_PROMPT_TEXT, BATCH_API_URL, FILES_API_URL, OPENAI_API_KEYS, ENQUEUED_TOKEN_LIMIT
 from utils import log
 
 # --------------------------
@@ -30,7 +30,7 @@ class InsufficientBalanceError(Exception):
 # 基础处理类：封装重试机制
 # --------------------------
 class BaseOpenAIHandler:
-    def __init__(self, api_key: str, key_index: int, max_retries: int = 5, initial_delay: int = 3):
+    def __init__(self, api_key: str, key_index: int, max_retries: int = 99999, initial_delay: int = 3):
         self.api_key = api_key
         self.key_index = key_index
         self.disabled = False
@@ -233,10 +233,9 @@ class OpenAIBatchHandler(BaseOpenAIHandler):
 # --------------------------
 # 3. 批处理模式管理器
 # --------------------------
-MAX_KEY_FAILURE_THRESHOLD = 5
-
+# 注意：这里使用 ENQUEUED_TOKEN_LIMIT 代替原先硬编码的10000
 class MultiOpenAIBatchManager:
-    def __init__(self, max_failures_per_job: int = 5, poll_interval: int = 10, resume_map: Optional[Dict[str, str]] = None):
+    def __init__(self, max_failures_per_job: int = 99999, poll_interval: int = 10, resume_map: Optional[Dict[str, str]] = None):
         self.max_failures_per_job = max_failures_per_job
         self.poll_interval = poll_interval
         self.resume_map = resume_map if resume_map else {}
@@ -258,12 +257,12 @@ class MultiOpenAIBatchManager:
         with self.lock:
             key = handler.name_tag()
             current = self.handler_token_counts.get(key, 0)
-            if current + tokens <= 10000:
+            if current + tokens <= ENQUEUED_TOKEN_LIMIT:
                 self.handler_token_counts[key] = current + tokens
                 log(f"[MultiOpenAIBatchManager] {key} 预留 token {tokens} 成功，当前累计 token 数 {self.handler_token_counts[key]}。")
                 return True
             else:
-                log(f"[MultiOpenAIBatchManager] {key} 无法预留 token {tokens}（当前已预留 {current}）。")
+                log(f"[MultiOpenAIBatchManager] {key} 无法预留 token {tokens}（当前已预留 {current}，上限 {ENQUEUED_TOKEN_LIMIT}）。")
                 return False
 
     def release_tokens(self, handler: OpenAIBatchHandler, tokens: int):
@@ -285,7 +284,7 @@ class MultiOpenAIBatchManager:
                     count += 1
                     continue
                 current_tokens = self.handler_token_counts.get(handler.name_tag(), 0)
-                if current_tokens + job_token <= 10000:
+                if current_tokens + job_token <= ENQUEUED_TOKEN_LIMIT:
                     return handler
                 count += 1
         return None
@@ -319,7 +318,7 @@ class MultiOpenAIBatchManager:
                     fail_count += 1
                     current_key = job["handler"].name_tag()
                     self.api_key_failures[current_key] += 1
-                    if len(self.handlers) == 1 or self.api_key_failures[current_key] < MAX_KEY_FAILURE_THRESHOLD:
+                    if len(self.handlers) == 1 or self.api_key_failures[current_key] < 999: # 某个KEY的最大失败次数
                         log(f"[MultiOpenAIBatchManager] 当前 APIKey {current_key} 失败次数 {self.api_key_failures[current_key]}，尝试重用。")
                         self.release_tokens(job["handler"], job["token_count"])
                         if not self.reserve_tokens(job["handler"], job["token_count"]):

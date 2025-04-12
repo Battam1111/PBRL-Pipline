@@ -55,6 +55,7 @@ softgym/PyFlex/bindings/build
 checkpoints/
 data/
 dataCollection/Dataset/
+
 tests/
 bak/
 dataGenerationGemini/config.py
@@ -68,3 +69,6 @@ dataGenerationOpenai-DataRewrite/rewriteOutput
 dataGenerationDeepseek-DataRewrite/config.py
 dataGenerationDeepseek-DataRewrite/rewriteOutput
 dataGenerationDeepseek-DataRewrite/rewriteData
+
+gptEvaluation/result
+gptEvaluation/trush
