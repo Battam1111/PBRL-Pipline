@@ -72,3 +72,4 @@ dataGenerationDeepseek-DataRewrite/rewriteData
 
 gptEvaluation/result
 gptEvaluation/trush
+gptEvaluation/config.py
