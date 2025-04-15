@@ -653,9 +653,9 @@ def main(cfg):
     cfg.reward = 'learn_from_preference'
     
     # 设置视觉语言模型（VLM）的相关参数
-    cfg.vlm_label = 1  # 使用VLM标签(0/1)
-    cfg.vlm = 'pointllm_two_image'  # 使用名为`pointllm_two_image`的VLM模型
-    # cfg.vlm = ''  # 不使用vlm
+    cfg.vlm_label = 0  # 使用VLM标签(0/1)
+    # cfg.vlm = 'pointllm_two_image'  # 使用名为`pointllm_two_image`的VLM模型
+    cfg.vlm = ''  # 不使用vlm
     # cfg.vlm = 'gpt4v_two_image'  # 另一种可选的VLM模型（已注释）
     
     # 图像奖励相关配置

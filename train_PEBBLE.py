@@ -22,7 +22,7 @@ from collections import deque
 
 from logger import Logger            # 日志记录模块
 from replay_buffer import ReplayBuffer  # 回放缓冲区模块
-from RewardModel.reward_model import RewardModel    # 奖励模型模块（已经适配点云支持）
+from reward_model import RewardModel    # 奖励模型模块（已经适配点云支持）
 from reward_model_score import RewardModelScore  # 基于分数的奖励模型模块
 from prompt import clip_env_prompts     # 用于设置CLIP提示的环境变量
 # 数据保存相关模块（图像、点云）
@@ -641,9 +641,9 @@ def main(cfg):
     cfg.reward = 'learn_from_preference'
     
     # 设置视觉语言模型（VLM）的相关参数
-    cfg.vlm_label = 1  # 使用VLM标签(0/1)
-    cfg.vlm = 'pointllm_two_image'  # 使用名为`pointllm_two_image`的VLM模型
-    # cfg.vlm = ''  # 不使用vlm
+    cfg.vlm_label = 0  # 使用VLM标签(0/1)
+    # cfg.vlm = 'pointllm_two_image'  # 使用名为`pointllm_two_image`的VLM模型
+    cfg.vlm = ''  # 不使用vlm
     # cfg.vlm = 'gpt4v_two_image'  # 另一种可选的VLM模型（已注释）
     
     # 图像奖励相关配置

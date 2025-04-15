@@ -750,6 +750,11 @@ class RewardModel:
         # 7. 返回统一的八元组：
         #     状态-动作数据、奖励数据、点云数据、图像数据
         # ------------------------------
+
+        # 为图像baseline制定
+        if (pc_t_1 == None) or (pc_t_2 == None):
+            return sa_t_1, sa_t_2, r_t_1, r_t_2, img_t_1, img_t_2
+
         return sa_t_1, sa_t_2, r_t_1, r_t_2, pc_t_1, pc_t_2, img_t_1, img_t_2
 
 
